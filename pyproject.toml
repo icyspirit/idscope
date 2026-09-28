@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idscope"
+version = "0.1.0.dev0"
+description = "A lightweight jScope-like viewer for IMAS IDS data"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "imas-python[netcdf]>=2.0",
+    "numpy",
+    "pyqtgraph>=0.13",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+# A Qt binding is required for the GUI. pyqtgraph also works with PyQt5/PyQt6,
+# which is useful on clusters where PySide6 wheels cannot be installed.
+qt = ["PySide6"]
+test = ["pytest", "pytest-qt"]
+
+[project.scripts]
+idscope = "idscope.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # netCDF4 wheels built against an older numpy; harmless
+    "ignore:numpy.ndarray size changed:RuntimeWarning",
+]
