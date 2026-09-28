@@ -9,7 +9,7 @@ from idscope.data import (
     Trace,
     parse_signal_path,
 )
-from idscope.data.extract import geometry_outline, normalize
+from idscope.data.extract import geometry_outline, normalize, plan_path
 from idscope.data.sources import DataSource, parse_source
 from idscope.errors import NoDataError, PathError
 
@@ -185,28 +185,39 @@ def bolometer_source(tmp_path_factory):
 
 
 def test_dimensions_of_data_with_time(bolometer_source):
-    path = "bolometer/power_density/data"
-    data = get(bolometer_source, path)  # a map over time: (dim1, dim2)
-    assert isinstance(data, MapSeries) and data.time.shape == (4,)
-    x1, x2, z, t = data.at(2.0)
-    assert (x1.shape, x2.shape, t) == ((5,), (7,), 2.0)
-    assert z[3, 4] == 342.0
-    # The index follows the order of the Data Dictionary: (dim1, dim2, time)
-    column = get(bolometer_source, f"{path}[:, 4]")  # a profile along dim1, over time
-    assert isinstance(column, ProfileSeries) and column.x_axis.label == "grid/dim1"
-    np.testing.assert_allclose(column.at(2.0)[1], [42, 142, 242, 342, 442])
-    frozen = get(bolometer_source, f"{path}[:, :, 2]")  # the map at the third time
-    assert frozen.time is None and frozen.fixed_time == 2.0
-    # transpose() reorders all dimensions; time keeps its role wherever it goes
-    for axes in ("", ", 1, 0, 2", ", (2, 1, 0)", ", [1, 2, 0]"):
-        swapped = get(bolometer_source, f"transpose({path}{axes})")
-        y1, y2, w, _ = swapped.at(2.0)
-        assert (swapped.x_axis.label, swapped.x2_axis.label) == ("grid/dim2", "grid/dim1")
-        assert w.shape == (7, 5) and w[4, 3] == 342.0
-    same = get(bolometer_source, f"transpose({path}, 2, 0, 1)")  # time first
-    assert same.x_axis.label == "grid/dim1" and same.at(2.0)[2][3, 4] == 342.0
+    path = "bolometer/power_density/data"  # (dim1, dim2, time)
+    # Time is a dimension like the others: three are too many to show
     with pytest.raises(PathError, match="3 dimensions \\(grid/dim1, grid/dim2, time\\)"):
-        get(bolometer_source, f"transpose({path}, 1, 0)")
+        get(bolometer_source, path)
+    # An index selects along the dimensions in the order of the Data Dictionary
+    frozen = get(bolometer_source, f"{path}[:, :, 2]")  # the map at the third time
+    assert isinstance(frozen, MapSeries) and frozen.time is None
+    assert frozen.fixed_time == 2.0
+    x1, x2, z, _ = frozen.at(None)
+    assert (x1.shape, x2.shape, z[3, 4]) == ((5,), (7,), 342.0)
+    column = get(bolometer_source, f"{path}[:, 4]")  # a map of dim1 (x) and time (y)
+    assert isinstance(column, MapSeries) and column.time is None
+    assert (column.x_axis.label, column.x2_axis.label) == ("grid/dim1", "time")
+    x1, x2, z, _ = column.at(None)
+    np.testing.assert_allclose(x2, [0.0, 1.0, 2.0, 3.0])
+    np.testing.assert_allclose(z[:, 2], [42, 142, 242, 342, 442])
+    trace = get(bolometer_source, f"{path}[3, 4]")  # a curve along time
+    assert isinstance(trace, Trace)
+    np.testing.assert_allclose(trace.values, [340, 341, 342, 343])
+    # transpose() reorders the dimensions, time as any other
+    image = get(bolometer_source, f"transpose({path}[:, 4])")
+    assert (image.x_axis.label, image.x2_axis.label) == ("time", "grid/dim1")
+    assert image.at(None)[2].shape == (4, 5)
+    for axes in ("", ", 1, 0", ", (1, 0)", ", [1, 0]"):
+        swapped = get(bolometer_source, f"transpose({path}[:, :, 2]{axes})")
+        assert (swapped.x_axis.label, swapped.x2_axis.label) == ("grid/dim2", "grid/dim1")
+        assert swapped.at(None)[2][4, 3] == 342.0
+    with pytest.raises(PathError, match="3 dimensions \\(time, grid/dim1, grid/dim2\\)"):
+        get(bolometer_source, f"transpose({path}, 2, 0, 1)")
+    # Without axes, the order is reversed, as numpy.transpose: (2, 1, 0) for three
+    ids = bolometer_source.get_ids("bolometer")
+    plan = plan_path(ids.metadata, parse_signal_path(f"transpose({path})"))
+    assert plan.axes == (2, 1, 0)
 
 
 def test_fixed_time_slice(source_a):

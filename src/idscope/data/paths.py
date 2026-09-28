@@ -41,8 +41,8 @@ Rules:
   axis to the boundary.
 - ``transpose(path, axes...)`` reorders the dimensions of the data (those left by
   its index), as ``numpy.transpose``: ``transpose(path, 1, 0, 2)`` puts the second
-  dimension first. Without axes, their order is reversed. Dimensions are otherwise
-  never reordered.
+  dimension first. Without axes, their order is reversed (``2, 1, 0`` for three).
+  Dimensions are otherwise never reordered, and time is one like the others.
 """
 
 import dataclasses

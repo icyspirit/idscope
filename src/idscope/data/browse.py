@@ -64,17 +64,18 @@ def classify(ids_meta, dd_path: str):
         if kind is None:
             return None
         return kind, time_aos, _signal_path(parts, ":")
-    has_time_dim = any(c.is_time_coordinate for c in meta.coordinates)
-    time_dependent = time_aos or has_time_dim
-    other_dims = meta.ndim - (has_time_dim and not time_aos)
-    if other_dims == 0:
-        kind = TRACE if time_dependent else CONSTANT
-    elif other_dims == 1:
-        kind = PROFILE
-    elif other_dims == 2:
+    # Every dimension of the data counts, time included; the time array of
+    # structures is not one of them
+    time_dims = [c.is_time_coordinate for c in meta.coordinates]
+    time_dependent = time_aos or any(time_dims)
+    if meta.ndim == 0:
+        kind = TRACE if time_aos else CONSTANT
+    elif meta.ndim == 1:
+        kind = TRACE if time_dims[0] and not time_aos else PROFILE
+    elif meta.ndim == 2:
         kind = MAP
     else:
-        kind = UNSUPPORTED
+        kind = UNSUPPORTED  # until an index selects at most two dimensions
     # All elements, except for maps: one map is shown at a time
     return kind, time_dependent, _signal_path(parts, "0" if kind == MAP else ":")
 

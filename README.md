@@ -154,10 +154,13 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
   along them in that order, and a map draws the first along x and the second along
   y. idscope never reorders them by itself: `transpose(path, axes...)` does, as
   `numpy.transpose` does on the data left by the index. `transpose(path, 1, 0, 2)`
-  puts the second dimension first; without axes the order is reversed, which swaps
-  the two dimensions of a map. The only dimension with a role of its own is time,
-  recognized from the coordinates wherever it is: it is the time axis of traces and
-  time-space images, and the one the time bar moves along.
+  puts the second dimension first; without axes the order is reversed (`2, 1, 0`
+  for three dimensions), which swaps the two dimensions of a map. Time is a
+  dimension like the others: one dimension left makes a curve along its coordinate
+  (a time trace when that is time), two make a map (`power_density/data[:, 4]` has
+  dim1 along x and time along y), and more need an index
+  (`power_density/data[:, :, 2]`). What follows the time bar is the data of the
+  time-dependent arrays of structures (`profiles_1d`, `time_slice`, ...).
 - A path to a structure that describes a shape draws it in the poloidal plane, over
   maps: the 2D geometry of coils and passive loops (outline, rectangle,
   parallelogram, arcs of circle, annulus or thick line), `r`/`z` outlines and
@@ -185,10 +188,10 @@ names; this is noted in the log. `--dd-version` selects the version to use.
 
 | kind | shows | from |
 |---|---|---|
-| `trace` | y(t) | scalars in a time array of structures, arrays with a time coordinate |
-| `profile` | y(x) at the current time, or a bar per element | 1D quantities; values of paths with wildcards |
-| `map` | z(x1, x2) at the current time, with shapes over it | 2D quantities, e.g. `profiles_2d[0]/psi`; shapes in (R, Z) |
-| `spacetime` | a profile as an image z(t, x) | 1D quantities that depend on time |
+| `trace` | y(t) | scalars in a time array of structures, arrays along a time coordinate |
+| `profile` | y(x), at the current time for profiles in a time array of structures, or a bar per element | 1D quantities; values of paths with wildcards |
+| `map` | z(x1, x2), at the current time for maps in a time array of structures, with shapes over it | 2D quantities, e.g. `profiles_2d[0]/psi`; shapes in (R, Z) |
+| `spacetime` | a profile as an image z(t, x) | 1D quantities in a time array of structures |
 
 `auto` (the default) picks the kind from the first signal; a value per element of a
 wildcard (e.g. `coil[:]/element[:]/turns_with_sign`) makes bars. Maps and time-space

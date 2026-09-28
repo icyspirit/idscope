@@ -945,57 +945,48 @@ def _from_leaf(path, leaf, selectors, value_axis, doc, fixed_time,
     """Build a signal from a single data node (no time array of structures).
 
     The dimensions left by the selectors keep their order, or take the one of
-    ``axes`` (transpose); time is recognized from the coordinates wherever it is.
+    ``axes`` (transpose), and none has a role of its own, time included: one
+    dimension is a curve along its coordinate (a time trace when that is time), two
+    are a map, the first along x.
     """
     meta = leaf.metadata
     value = _leaf_array(leaf)
     if value.size == 0 or (value.ndim == 0 and np.isnan(value)):
         raise NoDataError(f"'{path.text}' is not filled.")
     full = _full_selectors(selectors, value.shape, meta.path_string)
-    time_dim = next(
-        (d for d in range(value.ndim) if meta.coordinates[d].is_time_coordinate), None
-    )
-    if time_dim is not None and not isinstance(full[time_dim], Range):
-        # A single time sample: the signal no longer depends on time
-        fixed_time = float(_time_of(leaf, time_dim, value.shape[time_dim])[full[time_dim]])
-        time_dim = None
+    for dim in range(value.ndim):
+        if meta.coordinates[dim].is_time_coordinate and not isinstance(full[dim], Range):
+            # One time sample: its time, for titles (the data is not changed)
+            fixed_time = float(_time_of(leaf, dim, value.shape[dim])[full[dim]])
     kept = [d for d, selector in enumerate(full) if isinstance(selector, Range)]
     selected = value[_numpy_index(full)]
     if axes is not None:
         selected = np.transpose(selected, axes)
         kept = [kept[axis] for axis in axes]
-    other = [d for d in kept if d != time_dim]
 
     def coordinate(dim: int):
         x, axis = _coordinate(leaf, dim, value.shape[dim])
         return x[full[dim].as_slice()], axis
 
-    if len(other) > 2:
+    if len(kept) > 2:
+        names = dimension_names(meta)
         raise PathError(
-            f"'{path.text}' has {len(other)} dimensions besides time; idscope can show "
-            "up to 2."
+            f"'{path.text}' has {len(kept)} dimensions "
+            f"({', '.join(names[d] for d in kept)}); idscope shows up to 2: select "
+            "some with an index on the data, e.g. [:, :, 0]."
         )
-    if time_dim is None:  # static data
-        if not other:
-            return Trace(path, None, selected, value_axis, doc, fixed_time)
-        if len(other) == 1:
-            x, x_axis = coordinate(other[0])
-            return ProfileSeries(path, None, [x], [selected], x_axis, value_axis, doc,
-                                 fixed_time)
-        (x1, a1), (x2, a2) = coordinate(other[0]), coordinate(other[1])
-        return MapSeries(path, None, 1, lambda i: (x1, x2, selected), a1, a2,
-                         value_axis, doc, fixed_time)
-
-    time = _time_of(leaf, time_dim, value.shape[time_dim])[full[time_dim].as_slice()]
-    moved = np.moveaxis(selected, kept.index(time_dim), 0)
-    if not other:
-        return Trace(path, time, moved, value_axis, doc, fixed_time)
-    if len(other) == 1:
-        x, x_axis = coordinate(other[0])
-        return ProfileSeries(path, time, [x] * len(time), list(moved), x_axis,
-                             value_axis, doc, fixed_time)
-    (x1, a1), (x2, a2) = coordinate(other[0]), coordinate(other[1])
-    return MapSeries(path, time, len(time), lambda i: (x1, x2, moved[i]), a1, a2,
+    if not kept:
+        return Trace(path, None, selected, value_axis, doc, fixed_time)
+    if len(kept) == 1:
+        (dim,) = kept
+        if meta.coordinates[dim].is_time_coordinate:  # a curve along time
+            time = _time_of(leaf, dim, value.shape[dim])[full[dim].as_slice()]
+            return Trace(path, time, selected, value_axis, doc, fixed_time)
+        x, x_axis = coordinate(dim)
+        return ProfileSeries(path, None, [x], [selected], x_axis, value_axis, doc,
+                             fixed_time)
+    (x1, a1), (x2, a2) = coordinate(kept[0]), coordinate(kept[1])
+    return MapSeries(path, None, 1, lambda i: (x1, x2, selected), a1, a2,
                      value_axis, doc, fixed_time)
 
 
