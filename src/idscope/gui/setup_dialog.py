@@ -96,10 +96,12 @@ class SetupDialog(QtWidgets.QDialog):
             _PATH: "e.g. core_profiles/profiles_1d/electrons/temperature\n"
                    "All elements (one curve or bar each): pf_active/coil[*]/current/data\n"
                    "Some of them: coil[0:6]; a sample of each: current/data[0]\n"
-                   "An index on the data selects along its dimensions: psi[:, 40]\n"
+                   "An index on the data selects along its dimensions, in the order\n"
+                   "of the Data Dictionary coordinates (see the IDS browser): psi[:, 40]\n"
                    "Shapes in (R, Z): pf_active/coil[*]/element[*]/geometry\n"
                    "Alternatives, tried in order: path_a | path_b\n"
-                   "norm(path): profiles normalized from their first to last point",
+                   "norm(path): profiles normalized from their first to last point\n"
+                   "transpose(path): a map with its two dimensions swapped",
             _SCALE: "plotted value = value × scale + offset",
             _OFFSET: "plotted value = value × scale + offset",
             _X: "x values of a profile (default: its coordinate), "

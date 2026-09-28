@@ -30,13 +30,16 @@ Rules:
   the signal then has a member per element, e.g. one time trace per coil for
   ``pf_active/coil[*]/current/data``.
 - An index applies to the node it is written on. On the last (data) node it selects
-  numpy style along the dimensions of the data: ``temperature[0]`` is the value on
-  the first radial grid point, ``psi[:, 40]`` the 41st column of a map, and
-  ``pf_active/coil[*]/current/data[0]`` the first current sample of every coil.
+  numpy style along the dimensions of the data, in the order of the Data Dictionary
+  coordinates: ``temperature[0]`` is the value on the first radial grid point,
+  ``psi[:, 40]`` the 41st column of a map, and ``pf_active/coil[*]/current/data[0]``
+  the first current sample of every coil.
 - ``norm(path)`` normalizes every profile between its first and last point,
   ``(y - y[0]) / (y[-1] - y[0])``: ``norm(equilibrium/time_slice/profiles_1d/psi)``
   is the normalized poloidal flux psi_n, since the profiles go from the magnetic
   axis to the boundary.
+- ``transpose(path)`` swaps the two dimensions of a map. Dimensions are otherwise
+  never reordered: the first one is drawn along x, the second along y.
 """
 
 import dataclasses
@@ -82,7 +85,7 @@ _GENERIC = re.compile(r"itime|i\d", re.ASCII)
 """Placeholders of the Data Dictionary documentation, e.g. ``profiles_1d(itime)``."""
 _FUNCTION = re.compile(r"(?P<function>[a-z]+)\s*\((?P<inner>.*)\)", re.ASCII | re.DOTALL)
 
-TRANSFORMS = ("norm",)
+TRANSFORMS = ("norm", "transpose")
 """Functions that can be applied to a path."""
 
 
@@ -100,10 +103,10 @@ class SignalPath:
     """Index of every node in :attr:`parts` (``None`` for the last one, whose index
     is :attr:`data_index`)."""
     data_index: Tuple[Selector, ...] = ()
-    """Index written on the last node, numpy style: one selector per wildcard, then
-    per dimension of the data."""
+    """Index written on the last node: one selector per dimension of the data (numpy
+    style, in the order of the Data Dictionary coordinates)."""
     transform: Optional[str] = None
-    """Function applied to the data, e.g. ``norm``."""
+    """Function applied to the data: ``norm`` or ``transpose``."""
 
     @property
     def dd_path(self) -> str:
@@ -130,7 +133,7 @@ class SignalPath:
         The label starts at the last explicitly indexed node when there is one, so
         that ``flux_loop[3]/flux/data`` does not collapse to ``flux/data``.
         """
-        if self.transform:
+        if self.transform == "norm":
             return self.name
         formatted = self._formatted()
         start = max(len(formatted) - 2, 0)

@@ -1,10 +1,18 @@
 """Listing of the plottable quantities in a data source (the IDS browser)."""
 
-from typing import List, NamedTuple, Optional
+from typing import List, NamedTuple, Optional, Tuple
 
 from imas.ids_data_type import IDSDataType
 
-from idscope.data.extract import MAP, PROFILE, SHAPE, TRACE, is_time_aos, shape_kind
+from idscope.data.extract import (
+    MAP,
+    PROFILE,
+    SHAPE,
+    TRACE,
+    dimension_names,
+    is_time_aos,
+    shape_kind,
+)
 from idscope.data.sources import DataSource
 
 CONSTANT = "constant"
@@ -25,6 +33,9 @@ class BrowseItem(NamedTuple):
     time_dependent: bool
     units: str
     documentation: str
+    dimensions: Tuple[str, ...] = ()
+    """What the dimensions of the data run along, in the order an index on the
+    data selects them, e.g. ``('grid/dim1', 'grid/dim2')``."""
 
 
 def classify(ids_meta, dd_path: str):
@@ -124,6 +135,7 @@ def list_signals(
                 time_dependent,
                 meta.units,
                 meta.documentation or "",
+                tuple(dimension_names(meta)),
             )
         )
     for dd_path in shapes:

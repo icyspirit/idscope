@@ -148,6 +148,13 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
   coil), `profiles_1d/ion[*]/temperature[0]` the central temperature of every ion
   species over time, and `profiles_2d[0]/psi[:, 40]` a column of the map. Which
   coils or species is written on the array of structures: `coil[0:6]`, `ion[1]`.
+- **Dimensions** keep the order of the Data Dictionary coordinates, which the tooltip
+  of the IDS browser shows (e.g. `psi`: `grid/dim1, grid/dim2`). An index selects
+  along them in that order, and a map draws the first along x and the second along
+  y. idscope never reorders them: `transpose(path)` swaps the two dimensions of a
+  map. The only dimension with a role of its own is time, recognized from the
+  coordinates wherever it is: it is the time axis of traces and time-space images,
+  and the one the time bar moves along.
 - A path to a structure that describes a shape draws it in the poloidal plane, over
   maps: the 2D geometry of coils and passive loops (outline, rectangle,
   parallelogram, arcs of circle, annulus or thick line), `r`/`z` outlines and

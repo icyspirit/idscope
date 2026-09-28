@@ -139,6 +139,21 @@ def test_map_series(source_a):
     assert t == pytest.approx(3.0)
 
 
+def test_transpose(source_a):
+    psi = get(source_a, "equilibrium/time_slice/profiles_2d[0]/psi")
+    swapped = get(source_a, "transpose(equilibrium/time_slice/profiles_2d[0]/psi)")
+    assert isinstance(swapped, MapSeries)
+    assert (swapped.x_axis.label, swapped.x2_axis.label) == ("grid/dim2", "grid/dim1")
+    x1, x2, z, _ = psi.at(3.0)
+    y1, y2, w, t = swapped.at(3.0)
+    np.testing.assert_allclose(y1, x2)
+    np.testing.assert_allclose(y2, x1)
+    np.testing.assert_allclose(w, z.T)
+    assert t == pytest.approx(3.0)
+    with pytest.raises(PathError, match="transpose\\(\\) swaps the two dimensions of a map"):
+        get(source_a, "transpose(core_profiles/profiles_1d/electrons/temperature)")
+
+
 def test_fixed_time_slice(source_a):
     data = get(source_a, "core_profiles/profiles_1d[4]/electrons/temperature")
     assert isinstance(data, ProfileSeries)

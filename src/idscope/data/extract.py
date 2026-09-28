@@ -693,7 +693,28 @@ def extract_signal(ids, path: SignalPath) -> SignalData:
     data = _extract(ids, path)
     if path.transform == "norm":
         data = normalize(data)
+    elif path.transform == "transpose":
+        data = transpose(data)
     return data
+
+
+def transpose(data: SignalData) -> SignalData:
+    """The map with its two dimensions swapped: x1 becomes the vertical axis."""
+    if isinstance(data, Channels) and data.kind == MAP:
+        return Channels(data.path, [transpose(m) for m in data.members], data.names,
+                        data.value_axis, data.documentation, data.axis_label)
+    if not isinstance(data, MapSeries):
+        raise PathError(
+            f"transpose() swaps the two dimensions of a map, but '{data.path.text}' is "
+            f"a {data.kind}."
+        )
+
+    def load(i: int):
+        x1, x2, z = data.at_index(i)
+        return x2, x1, z.T
+
+    return MapSeries(data.path, data.time, data.count, load, data.x2_axis, data.x_axis,
+                     data.value_axis, data.documentation, data.fixed_time)
 
 
 def normalize(data: SignalData) -> SignalData:
@@ -883,19 +904,26 @@ def _extract_member(ids, path: SignalPath, plan: _Plan, key: Dict[int, int]):
     )
 
 
+def dimension_names(meta) -> List[str]:
+    """What the dimensions of a data node run along, in order: the names of its
+    Data Dictionary coordinates, e.g. ``['grid/dim1', 'grid/dim2']`` for a psi map.
+    ``time`` for a time coordinate, ``index`` for a plain 1...N."""
+    names = []
+    for coordinate in meta.coordinates:
+        if coordinate.is_time_coordinate:
+            names.append("time")
+        elif coordinate.references:
+            parts = coordinate.references[0].parts
+            names.append("/".join(parts[-2:]) if parts[-1] in _GENERIC_NAMES else parts[-1])
+        else:
+            names.append("index")
+    return names
+
+
 def _map_axes(meta, dims) -> Tuple[Axis, Axis]:
     """Axis labels of a map from the metadata of its coordinates."""
-    axes = []
-    for dim in dims:
-        coordinate = meta.coordinates[dim]
-        if coordinate.references:
-            ref = coordinate.references[0]
-            name = ref.parts[-1]
-            label = "/".join(ref.parts[-2:]) if name in _GENERIC_NAMES else name
-            axes.append(Axis(label, ""))
-        else:
-            axes.append(Axis("index", ""))
-    return axes[0], axes[1]
+    names = dimension_names(meta)
+    return Axis(names[dims[0]], ""), Axis(names[dims[1]], "")
 
 
 def _from_leaf(path, leaf, selectors, value_axis, doc, fixed_time) -> SignalData:

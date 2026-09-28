@@ -28,10 +28,19 @@ def test_norm_function():
     assert [p.transform for p in x] == [None, "norm"]
 
 
+def test_transpose_function():
+    path = parse_signal_path("transpose(equilibrium/time_slice/profiles_2d[0]/psi)")
+    assert path.transform == "transpose"
+    assert path.canonical() == "transpose(equilibrium/time_slice/profiles_2d[0]/psi)"
+    assert path.name == "psi"
+    assert path.label == "profiles_2d[0]/psi"
+
+
 @pytest.mark.parametrize(
     "text, message",
     [
-        ("sqrt(core_profiles/profiles_1d/grid/psi)", "Unknown function 'sqrt'"),
+        ("sqrt(core_profiles/profiles_1d/grid/psi)",
+         "Unknown function 'sqrt'.*available: norm, transpose"),
         ("norm(norm(core_profiles/profiles_1d/grid/psi))", "cannot be nested"),
         ("norm( )", "needs a signal path"),
     ],

@@ -174,8 +174,12 @@ class BrowserWidget(QtWidgets.QWidget):
             leaf.setText(2, item.units)
             leaf.setFlags(leaf.flags() | QtCore.Qt.ItemFlag.ItemIsDragEnabled)
             leaf.setData(0, _PATH_ROLE, item.signal_path)
-            doc = item.documentation
-            leaf.setToolTip(0, f"{item.signal_path}\n\n{doc}" if doc else item.signal_path)
+            tip = item.signal_path
+            if item.dimensions:  # the order an index on the data selects them in
+                tip += f"\ndimensions: ({', '.join(item.dimensions)})"
+            if item.documentation:
+                tip += f"\n\n{item.documentation}"
+            leaf.setToolTip(0, tip)
             color = _KIND_COLORS.get(item.kind)
             if color:
                 leaf.setForeground(1, QtGui.QBrush(QtGui.QColor(color)))

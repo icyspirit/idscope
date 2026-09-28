@@ -7,6 +7,7 @@ def test_core_profiles_items(source_a):
     assert te.kind == "profile" and te.time_dependent
     assert te.signal_path == "core_profiles/profiles_1d/electrons/temperature"
     assert te.units == "eV"
+    assert te.dimensions == ("rho_tor_norm",)  # the order an index selects them in
     ion = find_item(items, "profiles_1d/ion/temperature")
     assert ion.signal_path == "core_profiles/profiles_1d/ion[*]/temperature"
     assert find_item(items, "global_quantities/ip").kind == "trace"
@@ -23,6 +24,8 @@ def test_magnetics_and_equilibrium_items(source_a):
     psi = find_item(eq, "time_slice/profiles_2d/psi")
     assert psi.kind == "map"
     assert psi.signal_path == "equilibrium/time_slice/profiles_2d[0]/psi"
+    assert psi.dimensions == ("grid/dim1", "grid/dim2")
+    assert flux.dimensions == ("time",)
     assert find_item(eq, "vacuum_toroidal_field/r0").kind == "constant"
 
 
