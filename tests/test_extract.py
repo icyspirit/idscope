@@ -255,13 +255,22 @@ def test_wildcards_below_the_time_axis(source_a):
     assert isinstance(psi_n, Channels) and psi_n.x_axis.title() == "psi_n"
 
 
-def test_time_wildcard_ranges_and_cuts(source_a):
-    te0 = get(source_a, "core_profiles/profiles_1d[*]/electrons/temperature[:, 0]")
-    assert isinstance(te0, Trace) and te0.values.shape == (41,)
-    last = get(source_a, "core_profiles/profiles_1d[*]/electrons/temperature[-1]")
+def test_time_axis_ranges_and_cuts(source_a):
+    # The time array of structures is the time axis, not a wildcard, even with [:]
+    implicit = get(source_a, "core_profiles/profiles_1d/electrons/temperature[0]")
+    for text in ("core_profiles/profiles_1d[:]/electrons/temperature[0]",
+                 "core_profiles/profiles_1d(:)/electrons/temperature(1)",
+                 "core_profiles/profiles_1d[*]/electrons/temperature[0]"):
+        te0 = get(source_a, text)
+        assert isinstance(te0, Trace)
+        np.testing.assert_allclose(te0.values, implicit.values)
+    with pytest.raises(PathError, match="for 0 wildcards and 1 dimension"):
+        get(source_a, "core_profiles/profiles_1d[:]/electrons/temperature[:, 0]")
+    last = get(source_a, "core_profiles/profiles_1d[-1]/electrons/temperature")
     assert last.time is None and last.fixed_time == pytest.approx(10.0)
-    some = get(source_a, "core_profiles/profiles_1d[0:10]/electrons/temperature")
+    some = get(source_a, "core_profiles/profiles_1d[0:10]/electrons/temperature[0]")
     np.testing.assert_allclose(some.time, TIME[:10])
+    np.testing.assert_allclose(some.values, implicit.values[:10])
     cut = get(source_a, "equilibrium/time_slice/profiles_2d[0]/psi[:, 40]")  # Z = 0
     assert isinstance(cut, ProfileSeries) and cut.x_axis.label == "grid/dim1"
     r, psi, _ = cut.at(5.0)

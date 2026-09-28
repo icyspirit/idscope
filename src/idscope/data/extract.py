@@ -441,8 +441,13 @@ def plan_path(ids_meta, path: SignalPath) -> _Plan:
         if index is not None and meta.data_type is not IDSDataType.STRUCT_ARRAY:
             node = "/".join(path.parts[:pos + 1])
             raise PathError(f"'{node}' is a structure and cannot be indexed.")
-    # The first indices of the last node are for the wildcards, in path order
-    wildcards = [pos for pos, index in enumerate(indices) if isinstance(index, Range)]
+    # The first indices of the last node are for the wildcards, in path order. The
+    # time array of structures is not one of them, even as profiles_1d[:]: it is the
+    # time axis, and takes its own index (profiles_1d[3], profiles_1d[0:10]).
+    wildcards = [
+        pos for pos, (meta, index) in enumerate(zip(metas, indices))
+        if isinstance(index, Range) and not is_time_aos(meta)
+    ]
     chains = [() if index is None else (index,) for index in indices]
     for pos, selector in zip(wildcards, data_index):
         chains[pos] += (selector,)

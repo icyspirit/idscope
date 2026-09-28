@@ -132,8 +132,9 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
 ```
 
 - The time-dependent array of structures (`profiles_1d`, `time_slice`, ...) is left
-  without index; it becomes the time axis (`(itime)` as in the Data Dictionary
-  documentation is accepted too). An index selects one time slice, a range some.
+  without index; it becomes the time axis (`[:]`, `(:)` and `(itime)` as in the Data
+  Dictionary documentation are accepted too). An index selects one time slice, a
+  range some.
 - Other arrays of structures need an index: `ion[0]`, `flux_loop(1)`, `coil[-1]`
   (the last one), or a **wildcard**: `*` or `:` for all elements, `a:b` or `a:b:step`
   for some of them (Fortran ranges `(a:b)` include both ends). A path with wildcards
@@ -142,8 +143,12 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
   panel. Wildcards can be nested (`coil[*]/element[*]`).
 - An index on the last node selects numpy style along every dimension of the
   result: first one per wildcard, in the order of the path, then those of the data.
-  So `coil[*]/current/data[:, 0]` is the first sample of every coil, and
-  `coil[*]/current/data[2]` the current of coil 2.
+  So `coil[*]/current/data[:, 0]` is the first sample of every coil,
+  `coil[*]/current/data[2]` the current of coil 2, and
+  `profiles_1d/ion[*]/temperature[:, 0]` the central temperature of every ion
+  species. The time array of structures is the time axis, not a wildcard, even
+  written `profiles_1d[:]`: `profiles_1d[:]/electrons/temperature[0]` is the
+  temperature on the first grid point, over time.
 - A path to a structure that describes a shape draws it in the poloidal plane, over
   maps: the 2D geometry of coils and passive loops (outline, rectangle,
   parallelogram, arcs of circle, annulus or thick line), `r`/`z` outlines and
