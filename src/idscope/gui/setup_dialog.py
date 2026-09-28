@@ -53,7 +53,10 @@ class SetupDialog(QtWidgets.QDialog):
         self.contours = QtWidgets.QSpinBox()
         self.contours.setRange(0, 100)
         self.contours.setValue(config.contours)
-        self.contours.setToolTip("Number of contour lines on maps and time-space images")
+        self.contours.setToolTip(
+            "Draw maps and time-space images as this many contour lines instead of an "
+            "image (0: image)"
+        )
 
         form.addWidget(QtWidgets.QLabel("Title"), 0, 0)
         form.addWidget(self.title, 0, 1, 1, 3)
@@ -89,11 +92,13 @@ class SetupDialog(QtWidgets.QDialog):
             sources_tip += f"\nAvailable: {', '.join(source_labels)}"
         tips = {
             _PATH: "e.g. core_profiles/profiles_1d/electrons/temperature\n"
-                   "Alternatives, tried in order: path_a | path_b",
+                   "Alternatives, tried in order: path_a | path_b\n"
+                   "norm(path): profiles normalized from their first to last point",
             _SCALE: "plotted value = value × scale + offset",
             _OFFSET: "plotted value = value × scale + offset",
             _X: "x values of a profile (default: its coordinate), "
-                "e.g. core_profiles/profiles_1d/grid/psi",
+                "e.g. core_profiles/profiles_1d/grid/psi,\n"
+                "or norm(core_profiles/profiles_1d/grid/psi) for psi_n",
             _COLOR: "e.g. #d62728 or red (empty: automatic)",
             _SOURCES: sources_tip,
         }

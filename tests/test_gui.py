@@ -3,6 +3,7 @@ import pytest
 
 pytest.importorskip("pyqtgraph.Qt")
 
+import pyqtgraph as pg  # noqa: E402
 from pyqtgraph.Qt import QtCore, QtGui  # noqa: E402
 
 from idscope.config import load_config  # noqa: E402
@@ -241,11 +242,26 @@ def test_map_overlay_and_contours(window):
     psi = window.panels[6]
     boundary = [c for c in psi.curves if c.item is not None]
     assert [c.name for c in boundary] == ["boundary [A]", "boundary [B]"]
-    assert psi._contours is not None
     x_before = boundary[0].item.xData.copy()
     window.set_time(1.0)
     assert not np.allclose(x_before, boundary[0].item.xData)
     assert psi.title_item.textItem.toPlainText() == "Poloidal flux  t = 1 s"
+    # contours: 10 -> contour lines only, no filled image
+    assert psi._image is None
+    assert len(psi._contours) == 10
+    assert psi._colorbar.getAxis("left").labelText == "profiles_2d[0]/psi [Wb]"
+    psi.config.contours = 0
+    window.refresh_panel(psi)
+    assert isinstance(psi._image, pg.ImageItem) and psi._contours == []
+    assert psi._colorbar.getAxis("left").labelText == "profiles_2d[0]/psi [Wb]"
+
+
+def test_pan_mode_and_major_grid_by_default(window):
+    assert window.mode == "pan"
+    assert window.mode_actions["pan"].isChecked()
+    for panel in window.panels:
+        assert panel.plot.getViewBox().state["mouseMode"] == pg.ViewBox.PanMode
+        assert panel.plot.getAxis("left").style["maxTickLevel"] == 0  # no minor grid
 
 
 def test_slice_time_in_title_or_legend(window):

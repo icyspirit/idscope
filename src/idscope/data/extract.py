@@ -45,8 +45,8 @@ class Axis(NamedTuple):
     units: str = ""
 
     def title(self) -> str:
-        """Axis title like ``temperature [eV]``."""
-        if self.units and self.units != "-":
+        """Axis title like ``temperature [eV]`` (no units for dimensionless data)."""
+        if self.units and self.units not in ("-", "1"):
             return f"{self.label} [{self.units}]"
         return self.label
 
@@ -449,6 +449,37 @@ def extract_signal(ids, path: SignalPath) -> SignalData:
         PathError: when the path does not match the Data Dictionary.
         NoDataError: when the data is not filled.
     """
+    data = _extract(ids, path)
+    if path.transform == "norm":
+        data = normalize(data)
+    return data
+
+
+def normalize(data: SignalData) -> SignalData:
+    """``(y - y[0]) / (y[-1] - y[0])`` for every profile, e.g. psi -> psi_n."""
+    if not isinstance(data, ProfileSeries):
+        raise PathError(
+            f"norm() applies to profiles, but '{data.path.text}' is a {data.kind}."
+        )
+    ys = [_normalized(y) for y in data.ys]
+    if not any(np.isfinite(y).any() for y in ys):
+        raise NoDataError(
+            f"'{data.path.text}' cannot be normalized: its first and last values are "
+            "missing or equal."
+        )
+    return ProfileSeries(
+        data.path, data.time, data.xs, ys, data.x_axis, Axis(data.path.name, ""),
+        data.documentation, data.fixed_time,
+    )
+
+
+def _normalized(y: np.ndarray) -> np.ndarray:
+    if len(y) < 2 or not (np.isfinite(y[0]) and np.isfinite(y[-1])) or y[0] == y[-1]:
+        return np.full(len(y), np.nan)
+    return (y - y[0]) / (y[-1] - y[0])
+
+
+def _extract(ids, path: SignalPath) -> SignalData:
     plan = plan_path(ids.metadata, path)
     meta = plan.leaf_meta
     value_axis = Axis(path.label, meta.units)
@@ -629,8 +660,9 @@ def apply_x(data: SignalData, x_data: SignalData) -> SignalData:
                 f"'{x_data.path.text}' and '{data.path.text}' have different lengths "
                 f"({len(x)} and {len(y)}) in slice {i}."
             )
+    x_axis = Axis(x_data.path.name, x_data.value_axis.units)
     return ProfileSeries(
-        data.path, data.time, new_xs, data.ys, x_data.value_axis, data.value_axis,
+        data.path, data.time, new_xs, data.ys, x_axis, data.value_axis,
         data.documentation, data.fixed_time,
     )
 

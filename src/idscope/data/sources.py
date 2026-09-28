@@ -260,11 +260,11 @@ class DataSource:
         cached = self._signals.get(key)
         if cached is None:
             try:
-                data = extract_signal(self.get_ids(path.ids_name, path.occurrence), path)
-                if x_path is not None:
-                    x_ids = self.get_ids(x_path.ids_name, x_path.occurrence)
-                    data = apply_x(data, extract_signal(x_ids, x_path))
-                cached = data
+                if x_path is None:
+                    ids = self.get_ids(path.ids_name, path.occurrence)
+                    cached = extract_signal(ids, path)
+                else:  # both are cached: x is often shared by many signals
+                    cached = apply_x(self.signal(path), self.signal(x_path))
             except IdscopeError as exc:
                 cached = exc
             self._signals[key] = cached
@@ -279,21 +279,34 @@ class DataSource:
     ) -> SignalData:
         """Extract the first alternative that can be read.
 
-        Every path is tried with every x path, in order. When none works, the error
-        reported is the first one that is not about the path itself (e.g. data not
-        filled), since that is the most informative.
+        Every path that can be read is tried with every x path, in order. When none
+        works, the error reported is the first one that is not about the path itself
+        (e.g. data not filled), since that is the most informative.
         """
+        x_paths = list(x_paths) or [None]
         errors: List[IdscopeError] = []
+        x_tried = False
         for path in paths:
-            for x_path in x_paths or (None,):
+            if x_paths != [None]:
+                try:
+                    self.signal(path)  # without its values, no x path can help
+                except IdscopeError as exc:
+                    errors.append(exc)
+                    continue
+                x_tried = True
+            for x_path in x_paths:
                 try:
                     return self.signal(path, x_path)
                 except IdscopeError as exc:
                     errors.append(exc)
         chosen = next((e for e in errors if not isinstance(e, PathError)), errors[0])
-        if len(errors) > 1:
-            tried = " | ".join(path.text for path in paths)
-            raise type(chosen)(f"{chosen} (tried {tried})")
+        tried = []
+        if len(paths) > 1:
+            tried.append(" | ".join(path.text for path in paths))
+        if x_tried and len(x_paths) > 1:
+            tried.append("x: " + " | ".join(x_path.text for x_path in x_paths))
+        if tried:
+            raise type(chosen)(f"{chosen} (tried {'; '.join(tried)})")
         raise chosen
 
     def close(self) -> None:

@@ -60,12 +60,14 @@ prints their names.
 
 | template | shows |
 |---|---|
-| `core_profiles` | Ip, central Te/Ti/ne, loop voltage, li and beta over time; Te/Ti, ne/ni, q, current densities and Zeff profiles; Te and ne against (t, rho) |
-| `equilibrium` | Ip, q95/q_axis, li/beta, magnetic axis and shape over time; q, pressure and current density profiles against rho_tor_norm; psi(R, Z) with contours and the boundary |
+| `core_profiles` | Ip, central Te/Ti/ne, loop voltage, li and beta over time; Te/Ti, ne/ni, q, current densities and Zeff profiles; Te and ne against (t, x) |
+| `equilibrium` | profiles: q, pressure, current densities (j_phi, j_parallel), dp/dpsi, FF', elongation and triangularities |
 
-They work with Data Dictionary 3 and 4 data thanks to alternative paths (see below).
-Panels whose quantities are not filled in a source say so. A template saved with
-File → Save as becomes a configuration that can be edited.
+Profiles are drawn against rho_tor_norm or, when it is not filled, against the
+normalized poloidal flux psi_n (`psi_norm` if filled, otherwise `norm(psi)`, see
+below). The templates work with Data Dictionary 3 and 4 data thanks to alternative
+paths. Panels whose quantities are not filled in a source say so. A template saved
+with File → Save as becomes a configuration that can be edited.
 
 ![equilibrium template on the ITER 134173/106 training data](docs/template-equilibrium.png)
 
@@ -77,15 +79,15 @@ File → Save as becomes a configuration that can be edited.
 | Expression (TDI) | Signal **path**, e.g. `equilibrium/time_slice/global_quantities/ip`, with scale and offset |
 | Browse signals | **IDS browser** (left): double-click or drag a quantity onto a panel |
 | Wave setup (double-click) | **Setup** dialog: double-click a panel |
-| Zoom / Point / Pan modes | **Zoom** / **Point** / **Pan** in the toolbar |
+| Zoom / Point / Pan modes | **Pan** (default) / **Zoom** / **Point** in the toolbar |
 | Save / Load settings (`.jscp`) | File → Save / Open (YAML) |
 
 - **Sources** are IDS netCDF files (`shot.nc`), IMAS URIs
   (`imas:hdf5?path=/data/entry`, `imas:mdsplus?...`) or HDF5 entry directories.
   Relative paths are relative to the configuration file.
-- **Zoom**: drag a rectangle; right-drag scales the axes, the wheel zooms.
-  **Pan**: drag to move. **Point**: click or drag in a time trace to set the time;
-  the status bar shows the values of the current panel at that time.
+- **Pan** (the default): drag to move; right-drag scales the axes, the wheel zooms.
+  **Zoom**: drag a rectangle. **Point**: click or drag in a time trace to set the
+  time; the status bar shows the values of the current panel at that time.
 - The **time bar** at the bottom steps through the time slices of the profiles and
   maps (also Ctrl+Left / Ctrl+Right). The dashed line in time traces can be dragged.
 - Panels that show the same x quantity **share their x axis** (View → Share x axes):
@@ -110,6 +112,7 @@ core_profiles/profiles_1d/electrons/temperature[0]   time trace of the first gri
 core_profiles/profiles_1d[3]/electrons/temperature   profile of time slice 3 only
 equilibrium/time_slice/profiles_2d[0]/psi            2D map, per time slice
 equilibrium:1/time_slice/global_quantities/ip        occurrence 1 of the IDS
+norm(equilibrium/time_slice/profiles_1d/psi)         psi normalized per time slice: psi_n
 ```
 
 - The time-dependent array of structures (`profiles_1d`, `time_slice`, ...) is left
@@ -125,6 +128,11 @@ equilibrium:1/time_slice/global_quantities/ip        occurrence 1 of the IDS
   (`equilibrium/time_slice/profiles_1d/j_phi | equilibrium/time_slice/profiles_1d/j_tor`)
   or filled in different IDSs
   (`core_profiles/global_quantities/ip | equilibrium/time_slice/global_quantities/ip`).
+- `norm(path)` normalizes every profile from its first to its last point,
+  `(y - y[0]) / (y[-1] - y[0])`, and adds `_n` to its name. Since the profiles of
+  `psi` go from the magnetic axis to the boundary, `norm(.../psi)` is psi_n. As x
+  path, `core_profiles/profiles_1d/grid/rho_tor_norm | norm(core_profiles/profiles_1d/grid/psi)`
+  draws against rho_tor_norm, or against psi_n when rho_tor_norm is not filled.
 
 Data stored with another major Data Dictionary version than the one idscope uses
 (e.g. DD 3 data with DD 4) is shown in its own version, so paths use that version's
@@ -142,8 +150,9 @@ names; this is noted in the log. `--dd-version` selects the version to use.
 `auto` (the default) picks the kind from the first signal. Maps and time-space images
 show one source at a time; choose it with the *Show* selector of the panel. Profiles
 added to a map are drawn over it for every source, e.g. the plasma boundary
-(`boundary/outline/z` with `x: boundary/outline/r`) over psi(R, Z); `contours: N` adds
-N contour lines to the image.
+(`boundary/outline/z` with `x: boundary/outline/r`) over psi(R, Z). With
+`contours: N`, maps and time-space images are drawn as N contour lines colored by
+level instead of an image.
 
 ## Configuration
 

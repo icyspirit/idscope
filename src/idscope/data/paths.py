@@ -22,11 +22,16 @@ Rules:
   only known from the Data Dictionary, so it is checked during extraction.
 - An index on the last (data) node selects along the first dimension of the data,
   e.g. ``temperature[0]`` is the value on the first radial grid point.
+- ``norm(path)`` normalizes every profile between its first and last point,
+  ``(y - y[0]) / (y[-1] - y[0])``: ``norm(equilibrium/time_slice/profiles_1d/psi)``
+  is the normalized poloidal flux psi_n, since the profiles go from the magnetic
+  axis to the boundary.
 """
 
+import dataclasses
 import re
 from dataclasses import dataclass
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 from imas.ids_path import IDSPath
 
@@ -59,6 +64,10 @@ _HEAD = re.compile(
     r"#?(?P<ids>[a-z][a-z0-9_]*)(?::(?P<occ>\d+))?(?:(?P<sep>[/.])(?P<rest>.*))?",
     re.ASCII | re.DOTALL,
 )
+_FUNCTION = re.compile(r"(?P<function>[a-z]+)\s*\((?P<inner>.*)\)", re.ASCII | re.DOTALL)
+
+TRANSFORMS = ("norm",)
+"""Functions that can be applied to a path."""
 
 
 @dataclass(frozen=True)
@@ -73,6 +82,8 @@ class SignalPath:
     """Node names below the IDS toplevel."""
     indices: Tuple[Index, ...]
     """Index of every node in :attr:`parts` (0-based int, ``ALL`` or ``None``)."""
+    transform: Optional[str] = None
+    """Function applied to the data, e.g. ``norm``."""
 
     @property
     def dd_path(self) -> str:
@@ -84,7 +95,13 @@ class SignalPath:
         head = self.ids_name
         if self.occurrence:
             head += f":{self.occurrence}"
-        return "/".join([head] + _format_parts(self.parts, self.indices))
+        path = "/".join([head] + _format_parts(self.parts, self.indices))
+        return f"{self.transform}({path})" if self.transform else path
+
+    @property
+    def name(self) -> str:
+        """Name of the quantity, e.g. ``temperature``, or ``psi_n`` for ``norm(psi)``."""
+        return f"{self.parts[-1]}_n" if self.transform == "norm" else self.parts[-1]
 
     @property
     def label(self) -> str:
@@ -93,6 +110,8 @@ class SignalPath:
         The label starts at the last explicitly indexed node when there is one, so
         that ``flux_loop[3]/flux/data`` does not collapse to ``flux/data``.
         """
+        if self.transform:
+            return self.name
         formatted = _format_parts(self.parts, self.indices)
         start = max(len(formatted) - 2, 0)
         for pos, index in enumerate(self.indices):
@@ -142,6 +161,23 @@ def parse_signal_path(text: str) -> SignalPath:
         PathError: when the path is malformed.
     """
     stripped = text.strip()
+    function = _FUNCTION.fullmatch(stripped)
+    if function:  # an IDS name is always followed by "/", so this is a function
+        name = function["function"]
+        if name not in TRANSFORMS:
+            raise PathError(
+                f"Unknown function '{name}' in '{stripped}'; available: "
+                f"{', '.join(TRANSFORMS)}."
+            )
+        if not function["inner"].strip():
+            raise PathError(
+                f"'{stripped}' needs a signal path, for example "
+                f"'{name}(equilibrium/time_slice/profiles_1d/psi)'."
+            )
+        inner = parse_signal_path(function["inner"])
+        if inner.transform:
+            raise PathError(f"Functions cannot be nested: '{stripped}'.")
+        return dataclasses.replace(inner, text=stripped, transform=name)
     match = _HEAD.fullmatch(stripped)
     if match is None:
         raise PathError(

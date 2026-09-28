@@ -29,6 +29,8 @@ COLORBAR_GAP = 4
 """Gap between a plot and its color bar."""
 COLORBAR_SPACE = COLORBAR_WIDTH + COLORBAR_GAP
 """Room taken by a color bar; panels without one reserve it to stay aligned."""
+EDGE_PADDING = 14
+"""Space between the data and the ends of the x axis, in pixels."""
 
 _DATA_KIND_TO_PANEL = {TRACE: "trace", PROFILE: "profile", MAP: "map"}
 _HINT = "Double-click to set up, or drop a signal from the IDS browser"
@@ -66,23 +68,28 @@ def _edges(x: np.ndarray) -> np.ndarray:
 
 
 def contour_lines(x1: np.ndarray, x2: np.ndarray, z: np.ndarray, count: int):
-    """``count`` evenly spaced contour lines of z(x1, x2), as x and y arrays with
-    NaN between lines (for one PlotDataItem), or None."""
+    """``count`` evenly spaced contour levels of z(x1, x2).
+
+    Returns:
+        ``[(level, x, y), ...]`` where x and y hold all lines of a level, separated
+        by NaN (to be drawn as one PlotDataItem).
+    """
     finite = z[np.isfinite(z)]
     if count <= 0 or finite.size == 0 or finite.min() == finite.max():
-        return None
+        return []
     levels = np.linspace(finite.min(), finite.max(), count + 2)[1:-1]
     generator = contourpy.contour_generator(
         x1, x2, np.ma.masked_invalid(z.T), line_type="Separate"
     )
-    xs, ys = [], []
+    result = []
     for level in levels:
+        xs, ys = [], []
         for line in generator.lines(level):
             xs += [line[:, 0], [np.nan]]
             ys += [line[:, 1], [np.nan]]
-    if not xs:
-        return None
-    return np.concatenate(xs), np.concatenate(ys)
+        if xs:
+            result.append((float(level), np.concatenate(xs), np.concatenate(ys)))
+    return result
 
 
 def _format(value: float) -> str:
@@ -115,11 +122,11 @@ class Panel(QtWidgets.QFrame):
         self.curves: List[Curve] = []
         self.errors: List[str] = []
         self._time: Optional[float] = None
-        self._mode = "zoom"
+        self._mode = "pan"
         self._image_curves: List[Curve] = []
         self._image = None
         self._colorbar = None
-        self._contours = None
+        self._contours: List[object] = []  # contour lines, one item per level
         self._image_grid: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
         self._image_time: Optional[float] = None
         self._title_time: Optional[float] = None
@@ -198,17 +205,23 @@ class Panel(QtWidgets.QFrame):
             axis = plot.getAxis(name)
             # Ticks point into the plot, as in jScope; values are shown as they are
             # (pyqtgraph would otherwise rescale them, e.g. "(x0.001)")
-            axis.setStyle(tickFont=font, tickLength=-4, tickTextOffset=2)
+            # Ticks and grid lines at the major tick values only (no minor grid)
+            axis.setStyle(tickFont=font, tickLength=-4, tickTextOffset=2, maxTickLevel=0)
             axis.enableAutoSIPrefix(False)
         plot.getAxis("left").setWidth(LEFT_AXIS_WIDTH)
         plot.getViewBox().suggestPadding = self._suggest_padding
 
     def _suggest_padding(self, axis: int) -> float:
-        """Auto-range padding: little along x (the edge tick labels must fit), room
-        for the title on y."""
-        if self.kind == "map":
+        """Auto-range padding: a few pixels along x, enough for the tick labels at
+        both ends (pyqtgraph hides labels that stick out of the plot), and room for
+        the title on y."""
+        if axis == 1 and self.kind != "map":
+            return 0.1
+        view = self.plot.getViewBox()
+        size = view.width() if axis == 0 else view.height()
+        if size <= 0:
             return 0.02
-        return 0.01 if axis == 0 else 0.1
+        return min(max(EDGE_PADDING / size, 0.005), 0.05)
 
     # ------------------------------------------------------------------ config
 
@@ -471,6 +484,7 @@ class Panel(QtWidgets.QFrame):
         self._set_image(time, grid, curve.scaled(z))
 
     def _set_image(self, x1: np.ndarray, x2: np.ndarray, z: np.ndarray) -> None:
+        """Show z(x1, x2) as an image, or as contour lines when ``contours`` is set."""
         if z.size == 0 or len(x1) != z.shape[0] or len(x2) != z.shape[1]:
             self._remove_image()
             return
@@ -479,14 +493,23 @@ class Panel(QtWidgets.QFrame):
             x1, z = x1[::-1], z[::-1]
         if len(x2) > 1 and x2[0] > x2[-1]:
             x2, z = x2[::-1], z[:, ::-1]
-        uniform = _is_uniform(x1) and _is_uniform(x2)
-        wanted = pg.ImageItem if uniform else pg.PColorMeshItem
-        if not isinstance(self._image, wanted):
-            self._remove_image()  # also removes the color bar
         finite = z[np.isfinite(z)]
         levels = (float(finite.min()), float(finite.max())) if finite.size else (0.0, 1.0)
         if levels[0] == levels[1]:
             levels = (levels[0] - 0.5, levels[1] + 0.5)
+        if self.config.contours > 0:
+            self._draw_contour_lines(x1, x2, z, levels)
+        else:
+            self._draw_image(x1, x2, z, levels)
+        self._image_grid = (x1, x2, z)
+        self._update_colorbar_label()  # the color bar may be new
+
+    def _draw_image(self, x1, x2, z, levels) -> None:
+        uniform = _is_uniform(x1) and _is_uniform(x2)
+        wanted = pg.ImageItem if uniform else pg.PColorMeshItem
+        if not isinstance(self._image, wanted):
+            # Another image type, or contour lines: start over (with the color bar)
+            self._remove_image()
         if uniform:
             if self._image is None:
                 self._image = pg.ImageItem(axisOrder="col-major")
@@ -514,32 +537,45 @@ class Panel(QtWidgets.QFrame):
                 colorMap=pg.colormap.get(style.COLORMAP), interactive=True, width=10,
             )
             self._colorbar.setImageItem(self._image, insert_in=self.plot)
-            self._colorbar.setFixedWidth(COLORBAR_WIDTH)
-            # The color bar goes in column 5 of the plot layout, after a gap column
-            self.plot.layout.setColumnFixedWidth(4, COLORBAR_GAP)
-            self._colorbar.getAxis("right").setStyle(
-                tickFont=self.plot.getAxis("left").style["tickFont"]
-            )
+            self._fit_colorbar()
         self._colorbar.setLevels(levels)
-        self._image_grid = (x1, x2, z)
-        self._draw_contours(x1, x2, z)
 
-    def _draw_contours(self, x1, x2, z) -> None:
-        if self._contours is not None:
-            self.plot.removeItem(self._contours)
-            self._contours = None
-        lines = contour_lines(x1, x2, z, self.config.contours)
-        if lines is not None:
-            self._contours = pg.PlotDataItem(
-                *lines, pen=pg.mkPen(255, 255, 255, 170, width=1), connect="finite"
+    def _draw_contour_lines(self, x1, x2, z, levels) -> None:
+        """Contour lines colored by level, without filling (no image)."""
+        if self._image is not None:
+            self._remove_image()  # the color bar of an image is interactive
+        self._remove_contours()
+        colormap = pg.colormap.get(style.CONTOUR_COLORMAP)
+        for level, x, y in contour_lines(x1, x2, z, self.config.contours):
+            fraction = (level - levels[0]) / (levels[1] - levels[0])
+            color = colormap.map(fraction, mode="qcolor")
+            item = pg.PlotDataItem(x, y, pen=pg.mkPen(color, width=1.5), connect="finite")
+            item.setZValue(5)
+            self.plot.addItem(item)
+            self._contours.append(item)
+        if self._colorbar is None:
+            self._colorbar = pg.ColorBarItem(
+                values=levels, colorMap=colormap, interactive=False, width=10,
             )
-            self._contours.setZValue(5)
-            self.plot.addItem(self._contours)
+            self.plot.layout.addItem(self._colorbar, 2, 5)
+            self._fit_colorbar()
+        self._colorbar.setLevels(levels)
+
+    def _fit_colorbar(self) -> None:
+        self._colorbar.setFixedWidth(COLORBAR_WIDTH)
+        # The color bar goes in column 5 of the plot layout, after a gap column
+        self.plot.layout.setColumnFixedWidth(4, COLORBAR_GAP)
+        self._colorbar.getAxis("right").setStyle(
+            tickFont=self.plot.getAxis("left").style["tickFont"]
+        )
+
+    def _remove_contours(self) -> None:
+        for item in self._contours:
+            self.plot.removeItem(item)
+        self._contours = []
 
     def _remove_image(self) -> None:
-        if self._contours is not None:
-            self.plot.removeItem(self._contours)
-            self._contours = None
+        self._remove_contours()
         if self._image is not None:
             self.plot.removeItem(self._image)
             self._image = None
@@ -652,11 +688,7 @@ class Panel(QtWidgets.QFrame):
                         if len(self.config.signals) == 1
                         else (f"[{only}]" if only else "")
                     )
-            if self._colorbar is not None and shown is not None:
-                scaled = shown.signal.scale != 1.0 or shown.signal.offset != 0.0
-                # Scaled values no longer have the units of the Data Dictionary
-                label = shown.name if scaled else shown.data.value_axis.title()
-                self._colorbar.setLabel("left", label, **{"font-size": f"{_FONT_SIZE}pt"})
+        self._update_colorbar_label()
         style_args = {"font-size": f"{_FONT_SIZE}pt"}
         x_text = cfg.x_label if cfg.x_label is not None else x_title
         y_text = cfg.y_label if cfg.y_label is not None else y_title
@@ -665,6 +697,15 @@ class Panel(QtWidgets.QFrame):
         # fixed axis width, and must be the same in all panels to line them up
         self.plot.setLabel("left", y_text or " ", **style_args)
         self._update_title()
+
+    def _update_colorbar_label(self) -> None:
+        shown = self._selected_image()
+        if self._colorbar is None or shown is None:
+            return
+        scaled = shown.signal.scale != 1.0 or shown.signal.offset != 0.0
+        # Scaled values no longer have the units of the Data Dictionary
+        label = shown.name if scaled else shown.data.value_axis.title()
+        self._colorbar.setLabel("left", label, **{"font-size": f"{_FONT_SIZE}pt"})
 
     def _show_message(self) -> None:
         if not self.config.signals:

@@ -14,6 +14,33 @@ def test_alternatives():
         parse_alternatives("core_profiles/time |")
 
 
+def test_norm_function():
+    path = parse_signal_path(" norm( core_profiles/profiles_1d/grid/psi ) ")
+    assert path.transform == "norm"
+    assert path.dd_path == "profiles_1d/grid/psi"
+    assert path.text == "norm( core_profiles/profiles_1d/grid/psi )"
+    assert path.canonical() == "norm(core_profiles/profiles_1d/grid/psi)"
+    assert path.label == path.name == "psi_n"
+    assert parse_signal_path("core_profiles/profiles_1d/grid/psi").name == "psi"
+    x = parse_alternatives(
+        "core_profiles/profiles_1d/grid/rho_tor_norm | norm(core_profiles/profiles_1d/grid/psi)"
+    )
+    assert [p.transform for p in x] == [None, "norm"]
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("sqrt(core_profiles/profiles_1d/grid/psi)", "Unknown function 'sqrt'"),
+        ("norm(norm(core_profiles/profiles_1d/grid/psi))", "cannot be nested"),
+        ("norm( )", "needs a signal path"),
+    ],
+)
+def test_invalid_functions(text, message):
+    with pytest.raises(PathError, match=message):
+        parse_signal_path(text)
+
+
 def test_simple_path():
     path = parse_signal_path("core_profiles/profiles_1d/electrons/temperature")
     assert path.ids_name == "core_profiles"
