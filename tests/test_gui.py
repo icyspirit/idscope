@@ -7,6 +7,7 @@ import pyqtgraph as pg  # noqa: E402
 from pyqtgraph.Qt import QtCore, QtGui  # noqa: E402
 
 from idscope.config import SignalConfig, load_config  # noqa: E402
+from idscope.data import parse_signal_path  # noqa: E402
 from idscope.demo import DEMO_CONFIG  # noqa: E402
 from idscope.errors import IdscopeError  # noqa: E402
 from idscope.gui.panel import MIME_SIGNAL  # noqa: E402
@@ -310,3 +311,9 @@ def test_wildcards_in_panels(window):
     window.set_time(5.0)
     np.testing.assert_allclose(panel._bars[0].item.opts["height"][:3], [-6, -9, -12])
     assert panel.title_item.textItem.toPlainText() == "t = 5 s"
+    # the bars at the selected time are the sample closest to it: data[k]
+    window.set_time(1.3)  # closest to the sample at 1.25 s, the sixth
+    source = window.pool.get(window.config.sources[0])
+    sample = source.signal(parse_signal_path("pf_active/coil[:]/current/data[5]"))
+    np.testing.assert_allclose(panel._bars[0].item.opts["height"],
+                               [1e-3 * float(m.values) for m in sample.members])
