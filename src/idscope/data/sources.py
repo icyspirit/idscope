@@ -10,13 +10,13 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import imas
 
 from idscope.data.extract import SignalData, apply_x, extract_signal
 from idscope.data.paths import SignalPath
-from idscope.errors import IdscopeError, NoDataError, SourceError
+from idscope.errors import IdscopeError, NoDataError, PathError, SourceError
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +271,30 @@ class DataSource:
         if isinstance(cached, IdscopeError):
             raise type(cached)(*cached.args)
         return cached
+
+    def first_signal(
+        self,
+        paths: Sequence[SignalPath],
+        x_paths: Sequence[Optional[SignalPath]] = (None,),
+    ) -> SignalData:
+        """Extract the first alternative that can be read.
+
+        Every path is tried with every x path, in order. When none works, the error
+        reported is the first one that is not about the path itself (e.g. data not
+        filled), since that is the most informative.
+        """
+        errors: List[IdscopeError] = []
+        for path in paths:
+            for x_path in x_paths or (None,):
+                try:
+                    return self.signal(path, x_path)
+                except IdscopeError as exc:
+                    errors.append(exc)
+        chosen = next((e for e in errors if not isinstance(e, PathError)), errors[0])
+        if len(errors) > 1:
+            tried = " | ".join(path.text for path in paths)
+            raise type(chosen)(f"{chosen} (tried {tried})")
+        raise chosen
 
     def close(self) -> None:
         """Close the data entry and drop all caches (the next access reopens it)."""

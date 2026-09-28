@@ -52,6 +52,26 @@ def test_signal_cache(source_a):
     assert source_a.signal(path).values.shape == (41,)
 
 
+def test_first_signal_alternatives(source_a, dd3_file):
+    from idscope.data import parse_alternatives
+
+    j = parse_alternatives(
+        "equilibrium/time_slice/profiles_1d/j_phi | equilibrium/time_slice/profiles_1d/j_tor"
+    )
+    assert source_a.first_signal(j).path.parts[-1] == "j_phi"  # DD 4
+    dd3 = DataSource(parse_source(str(dd3_file)))
+    try:
+        assert dd3.first_signal(j).path.parts[-1] == "j_tor"  # DD 3
+    finally:
+        dd3.close()
+    # j_tor does not exist in DD 4, j_phi exists but is not filled: report the latter
+    missing = parse_alternatives(
+        "core_profiles/profiles_1d/j_phi | core_profiles/profiles_1d/j_tor"
+    )
+    with pytest.raises(NoDataError, match=r"j_phi' is not filled\. \(tried"):
+        source_a.first_signal(missing)
+
+
 def test_missing_file(tmp_path):
     source = DataSource(parse_source(str(tmp_path / "missing.nc")))
     with pytest.raises((SourceError, NoDataError)):

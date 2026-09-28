@@ -17,6 +17,22 @@ def test_list_quantities(data_dir, capsys):
     assert "[eV]" in out
 
 
+def test_list_templates(capsys):
+    assert main(["--list-templates"]) == 0
+    assert capsys.readouterr().out.split() == ["core_profiles", "equilibrium"]
+
+
+def test_template_export(tmp_path, data_dir, capsys):
+    pytest.importorskip("pyqtgraph.Qt")
+    image = tmp_path / "eq.png"
+    args = ["-T", "equilibrium", str(data_dir / "a.nc"), "-e", str(image), "-t", "5"]
+    assert main(args) == 0
+    assert image.stat().st_size > 10000
+    assert "idscope:" not in capsys.readouterr().err  # no signal errors
+    assert main(["-T", "equilibrium", "x.yaml"]) == 1
+    assert main(["-T", "nope", str(data_dir / "a.nc")]) == 1
+
+
 def test_errors(tmp_path, capsys):
     assert main([str(tmp_path / "missing.yaml")]) == 1
     assert "Cannot read" in capsys.readouterr().err

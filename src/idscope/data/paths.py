@@ -26,7 +26,7 @@ Rules:
 
 import re
 from dataclasses import dataclass
-from typing import Tuple, Union
+from typing import List, Tuple, Union
 
 from imas.ids_path import IDSPath
 
@@ -114,6 +114,25 @@ def _format_parts(parts, indices):
         else:
             formatted.append(part)
     return formatted
+
+
+ALTERNATIVE_SEPARATOR = "|"
+
+
+def parse_alternatives(text: str) -> List[SignalPath]:
+    """Parse alternative paths ``a | b | ...``, to be tried in order.
+
+    Alternatives let one configuration work with data that uses different names,
+    e.g. ``core_profiles/profiles_1d/j_phi | core_profiles/profiles_1d/j_tor`` for
+    Data Dictionary 4 and 3.
+
+    Raises:
+        PathError: when one of the paths is malformed.
+    """
+    parts = text.split(ALTERNATIVE_SEPARATOR)
+    if len(parts) > 1 and any(not part.strip() for part in parts):
+        raise PathError(f"Empty alternative in '{text.strip()}'.")
+    return [parse_signal_path(part) for part in parts]
 
 
 def parse_signal_path(text: str) -> SignalPath:

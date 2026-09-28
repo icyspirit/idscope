@@ -38,13 +38,17 @@ FORMAT_VERSION = 1
 @dataclass
 class SignalConfig:
     path: str
+    """Signal path. Alternatives separated by ``|`` are tried in order, e.g.
+    ``core_profiles/profiles_1d/j_phi | core_profiles/profiles_1d/j_tor`` for data
+    in Data Dictionary 4 or 3."""
     label: Optional[str] = None
     """Legend label (default: the end of the path)."""
     scale: float = 1.0
     offset: float = 0.0
     """Plotted value is ``value * scale + offset``."""
     x: Optional[str] = None
-    """Path of the x values of a profile (default: its Data Dictionary coordinate)."""
+    """Path of the x values of a profile (default: its Data Dictionary coordinate).
+    Alternatives are separated by ``|``."""
     color: Optional[str] = None
     sources: Optional[List[str]] = None
     """Labels of the sources to plot this signal for (default: all)."""
@@ -65,6 +69,8 @@ class PanelConfig:
     legend: bool = True
     equal_aspect: bool = False
     """Same scale on both axes, e.g. for maps in the (R, Z) plane."""
+    contours: int = 0
+    """Number of contour lines drawn on a map."""
     height: float = 1.0
     """Relative height within the column."""
 
@@ -83,8 +89,10 @@ class ScopeConfig:
     columns: List[ColumnConfig] = field(default_factory=list)
     time: Optional[float] = None
     """Initial time of the time cursor."""
-    link_time_axes: bool = True
-    """Zoom all time traces together."""
+    share_x: bool = True
+    """Panels that show the same x quantity share their x axis: time across the
+    window, profile coordinates within a column. Stacked panels that share their x
+    axis are drawn without x tick labels, except for the lowest one."""
     dd_version: Optional[str] = None
     """Data Dictionary version to open the sources with (default: imas-python's)."""
 
@@ -132,6 +140,16 @@ def _number(data: dict, name: str, default, where: str):
 
 def _bool(data: dict, name: str, default: bool, where: str) -> bool:
     return _typed(data.get(name, default), bool, where, name)
+
+
+def _count(data: dict, name: str, where: str) -> int:
+    value = data.get(name, 0)
+    if value is None:
+        return 0
+    value = _typed(value, int, where, name)
+    if value < 0:
+        raise ConfigError(f"{where}: '{name}' must not be negative.")
+    return value
 
 
 def _opt_str(data: dict, name: str, where: str) -> Optional[str]:
@@ -204,6 +222,7 @@ def _panel(data, where: str) -> PanelConfig:
         log_y=_bool(data, "log_y", False, where),
         legend=_bool(data, "legend", True, where),
         equal_aspect=_bool(data, "equal_aspect", False, where),
+        contours=_count(data, "contours", where),
         height=_number(data, "height", 1.0, where),
     )
 
@@ -272,7 +291,7 @@ def config_from_dict(data: Any, base_dir: Optional[Path] = None) -> ScopeConfig:
         sources=unique_labels(specs),
         columns=[_column(c, f"columns[{i}]") for i, c in enumerate(columns)],
         time=time,
-        link_time_axes=_bool(data, "link_time_axes", True, "config"),
+        share_x=_bool(data, "share_x", True, "config"),
         dd_version=_opt_str(data, "dd_version", "config"),
     )
 
@@ -338,8 +357,8 @@ def config_to_dict(config: ScopeConfig, base_dir: Optional[Path] = None) -> dict
         data["sources"] = [spec.format(base_dir) for spec in config.sources]
     if config.time is not None:
         data["time"] = config.time
-    if not config.link_time_axes:
-        data["link_time_axes"] = False
+    if not config.share_x:
+        data["share_x"] = False
     if config.dd_version:
         data["dd_version"] = config.dd_version
     columns = []

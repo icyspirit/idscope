@@ -9,6 +9,7 @@ description = "A lightweight jScope-like viewer for IMAS IDS data"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+    "contourpy>=1.0",
     "imas-python[netcdf]>=2.0",
     "numpy",
     "pyqtgraph>=0.13",
@@ -26,6 +27,9 @@ idscope = "idscope.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"idscope.templates" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
