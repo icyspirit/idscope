@@ -281,7 +281,7 @@ def test_slice_time_in_title_or_legend(window):
 def test_wildcards_in_panels(window):
     window.change_layout(window.panels[2], "add_below")
     panel = window.current_panel
-    panel.add_signal("magnetics/flux_loop[*]/flux/data")
+    panel.add_signal("magnetics/flux_loop[:]/flux/data")
     assert panel.kind == "trace"
     assert [c.name for c in panel.curves] == [f"FL{k} [{s}]" for s in "AB" for k in (1, 2, 3)]
     # a color per flux loop, a line style per source
@@ -291,7 +291,7 @@ def test_wildcards_in_panels(window):
     assert pens[0].style() != pens[3].style()
 
     # a value per flux loop: bars, per loop and source
-    panel.config.signals = [SignalConfig("magnetics/flux_loop[*]/flux/data[-1]")]
+    panel.config.signals = [SignalConfig("magnetics/flux_loop[:]/flux/data[-1]")]
     window.refresh_panel(panel)
     assert panel.kind == "profile" and len(panel._bars) == 2
     ticks = panel.plot.getAxis("bottom")._tickLevels
@@ -302,7 +302,7 @@ def test_wildcards_in_panels(window):
     assert [label.text for _, label in panel.legend.items] == ["A", "B"]
 
     # time-dependent values follow the time
-    panel.config.signals = [SignalConfig("pf_active/coil[*]/current/data", scale=1e-3)]
+    panel.config.signals = [SignalConfig("pf_active/coil[:]/current/data", scale=1e-3)]
     panel.config.kind = "profile"
     window.refresh_panel(panel)
     window.set_time(0.0)

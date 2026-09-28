@@ -39,7 +39,7 @@ FORMAT_VERSION = 1
 class SignalConfig:
     path: str
     """Signal path. Wildcards select several elements, e.g.
-    ``pf_active/coil[*]/current/data`` (a curve per coil). Alternatives separated by
+    ``pf_active/coil[:]/current/data`` (a curve per coil). Alternatives separated by
     ``|`` are tried in order, e.g. ``core_profiles/profiles_1d/j_phi |
     core_profiles/profiles_1d/j_tor`` for data in Data Dictionary 4 or 3."""
     label: Optional[str] = None

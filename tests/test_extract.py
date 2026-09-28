@@ -141,17 +141,72 @@ def test_map_series(source_a):
 
 def test_transpose(source_a):
     psi = get(source_a, "equilibrium/time_slice/profiles_2d[0]/psi")
-    swapped = get(source_a, "transpose(equilibrium/time_slice/profiles_2d[0]/psi)")
-    assert isinstance(swapped, MapSeries)
-    assert (swapped.x_axis.label, swapped.x2_axis.label) == ("grid/dim2", "grid/dim1")
     x1, x2, z, _ = psi.at(3.0)
-    y1, y2, w, t = swapped.at(3.0)
-    np.testing.assert_allclose(y1, x2)
-    np.testing.assert_allclose(y2, x1)
-    np.testing.assert_allclose(w, z.T)
-    assert t == pytest.approx(3.0)
-    with pytest.raises(PathError, match="transpose\\(\\) swaps the two dimensions of a map"):
+    for text in ("transpose(equilibrium/time_slice/profiles_2d[0]/psi)",
+                 "transpose(equilibrium/time_slice/profiles_2d[0]/psi, 1, 0)"):
+        swapped = get(source_a, text)
+        assert isinstance(swapped, MapSeries)
+        assert (swapped.x_axis.label, swapped.x2_axis.label) == ("grid/dim2", "grid/dim1")
+        y1, y2, w, t = swapped.at(3.0)
+        np.testing.assert_allclose(y1, x2)
+        np.testing.assert_allclose(y2, x1)
+        np.testing.assert_allclose(w, z.T)
+        assert t == pytest.approx(3.0)
+    same = get(source_a, "transpose(equilibrium/time_slice/profiles_2d[0]/psi, 0, 1)")
+    np.testing.assert_allclose(same.at(3.0)[2], z)
+    with pytest.raises(PathError, match="has 1 dimension left, nothing to transpose"):
         get(source_a, "transpose(core_profiles/profiles_1d/electrons/temperature)")
+    with pytest.raises(PathError, match="new order of the 2 dimensions \\(grid/dim1, "
+                                        "grid/dim2\\).*not 0, 0"):
+        get(source_a, "transpose(equilibrium/time_slice/profiles_2d[0]/psi, 0, 0)")
+
+
+@pytest.fixture(scope="module")
+def bolometer_source(tmp_path_factory):
+    """A radiated power density on a (dim1, dim2) grid, with time as its third
+    dimension."""
+    import imas
+    from imas.ids_defs import IDS_TIME_MODE_HETEROGENEOUS
+
+    path = tmp_path_factory.mktemp("bolometer") / "bolometer.nc"
+    with imas.DBEntry(str(path), "w") as entry:
+        bolo = entry.factory.bolometer()
+        bolo.ids_properties.homogeneous_time = IDS_TIME_MODE_HETEROGENEOUS
+        bolo.grid.dim1 = np.linspace(1.0, 2.0, 5)  # the coordinates of the density
+        bolo.grid.dim2 = np.linspace(-1.0, 1.0, 7)
+        density = bolo.power_density
+        density.time = np.array([0.0, 1.0, 2.0, 3.0])
+        i, j, k = np.meshgrid(range(5), range(7), range(4), indexing="ij")
+        density.data = 100.0 * i + 10.0 * j + k  # (dim1, dim2, time)
+        entry.put(bolo)
+    source = DataSource(parse_source(str(path)))
+    yield source
+    source.close()
+
+
+def test_dimensions_of_data_with_time(bolometer_source):
+    path = "bolometer/power_density/data"
+    data = get(bolometer_source, path)  # a map over time: (dim1, dim2)
+    assert isinstance(data, MapSeries) and data.time.shape == (4,)
+    x1, x2, z, t = data.at(2.0)
+    assert (x1.shape, x2.shape, t) == ((5,), (7,), 2.0)
+    assert z[3, 4] == 342.0
+    # The index follows the order of the Data Dictionary: (dim1, dim2, time)
+    column = get(bolometer_source, f"{path}[:, 4]")  # a profile along dim1, over time
+    assert isinstance(column, ProfileSeries) and column.x_axis.label == "grid/dim1"
+    np.testing.assert_allclose(column.at(2.0)[1], [42, 142, 242, 342, 442])
+    frozen = get(bolometer_source, f"{path}[:, :, 2]")  # the map at the third time
+    assert frozen.time is None and frozen.fixed_time == 2.0
+    # transpose() reorders all dimensions; time keeps its role wherever it goes
+    for axes in ("", ", 1, 0, 2", ", (2, 1, 0)", ", [1, 2, 0]"):
+        swapped = get(bolometer_source, f"transpose({path}{axes})")
+        y1, y2, w, _ = swapped.at(2.0)
+        assert (swapped.x_axis.label, swapped.x2_axis.label) == ("grid/dim2", "grid/dim1")
+        assert w.shape == (7, 5) and w[4, 3] == 342.0
+    same = get(bolometer_source, f"transpose({path}, 2, 0, 1)")  # time first
+    assert same.x_axis.label == "grid/dim1" and same.at(2.0)[2][3, 4] == 342.0
+    with pytest.raises(PathError, match="3 dimensions \\(grid/dim1, grid/dim2, time\\)"):
+        get(bolometer_source, f"transpose({path}, 1, 0)")
 
 
 def test_fixed_time_slice(source_a):
@@ -226,7 +281,7 @@ COILS = ["CS3U", "CS2U", "CS1U", "CS1L", "CS2L", "CS3L",
 
 
 def test_wildcard_traces(source_a):
-    currents = get(source_a, "pf_active/coil[*]/current/data")
+    currents = get(source_a, "pf_active/coil[:]/current/data")
     assert isinstance(currents, Channels) and currents.kind == "trace"
     assert currents.names == COILS
     assert currents.axis_label == "coil"
@@ -240,14 +295,14 @@ def test_wildcard_traces(source_a):
 
 def test_index_on_the_data_of_every_element(source_a):
     # The index of the data node selects along the data (time), for every coil
-    first = get(source_a, "pf_active/coil[*]/current/data[0]")
+    first = get(source_a, "pf_active/coil[:]/current/data[0]")
     assert isinstance(first, Channels) and first.names == COILS
     assert all(member.time is None for member in first.members)
     assert first.members[0].fixed_time == 0.0
     np.testing.assert_allclose(
         [float(m.values) for m in first.members[:3]], [12e3, 15e3, 18e3]
     )
-    third = get(source_a, "pf_active/coil[*]/current/data[2]")  # t = 0.5 s
+    third = get(source_a, "pf_active/coil[:]/current/data[2]")  # t = 0.5 s
     assert third.members[0].fixed_time == pytest.approx(0.5)
     np.testing.assert_allclose(
         [float(m.values) for m in third.members[:3]], [7.5e3, 9e3, 10.5e3]
@@ -256,29 +311,29 @@ def test_index_on_the_data_of_every_element(source_a):
     assert isinstance(last_coil, Trace) and last_coil.values[-1] == pytest.approx(-4e3)
     # current/data has one dimension: the wildcard does not add one
     with pytest.raises(PathError, match="'coil/current/data' has 1 dimension, but 2"):
-        get(source_a, "pf_active/coil[*]/current/data[:, 0]")
-    with pytest.raises(PathError, match="or 'coil\\[\\*\\]' for all of them"):
+        get(source_a, "pf_active/coil[:]/current/data[:, 0]")
+    with pytest.raises(PathError, match="or 'coil\\[:\\]' for all of them"):
         get(source_a, "pf_active/coil/current/data")
     with pytest.raises(NoDataError, match="Index 20 is out of range for 'coil'"):
         get(source_a, "pf_active/coil[20]/current/data")
     with pytest.raises(NoDataError, match="Index 99 is out of range for 'coil/current"):
-        get(source_a, "pf_active/coil[*]/current/data[99]")
+        get(source_a, "pf_active/coil[:]/current/data[99]")
 
 
 def test_wildcards_below_the_time_axis(source_a):
-    ions = get(source_a, "core_profiles/profiles_1d/ion[*]/temperature")
+    ions = get(source_a, "core_profiles/profiles_1d/ion[:]/temperature")
     assert isinstance(ions, Channels) and ions.kind == "profile"
     assert ions.names == ["D", "C"]
     # the second species is missing in the last three time slices
     assert [len(y) for y in ions.members[1].ys[-4:]] == [51, 0, 0, 0]
-    central = get(source_a, "core_profiles/profiles_1d/ion[*]/temperature[0]")
+    central = get(source_a, "core_profiles/profiles_1d/ion[:]/temperature[0]")
     assert isinstance(central, Channels) and central.names == ["D", "C"]
     assert central.kind == "trace" and central.members[0].values.shape == (41,)
     np.testing.assert_allclose(central.members[0].values,
                                [y[0] if len(y) else np.nan for y in ions.members[0].ys])
     with pytest.raises(PathError, match="'profiles_1d/ion/temperature' has 1 dimension"):
-        get(source_a, "core_profiles/profiles_1d/ion[*]/temperature[:, 0]")
-    psi_n = get(source_a, "core_profiles/profiles_1d/ion[*]/temperature",
+        get(source_a, "core_profiles/profiles_1d/ion[:]/temperature[:, 0]")
+    psi_n = get(source_a, "core_profiles/profiles_1d/ion[:]/temperature",
                 x="norm(core_profiles/profiles_1d/grid/psi)")
     assert isinstance(psi_n, Channels) and psi_n.x_axis.title() == "psi_n"
 
@@ -288,7 +343,7 @@ def test_time_axis_ranges_and_cuts(source_a):
     implicit = get(source_a, "core_profiles/profiles_1d/electrons/temperature[0]")
     for text in ("core_profiles/profiles_1d[:]/electrons/temperature[0]",
                  "core_profiles/profiles_1d(:)/electrons/temperature(1)",
-                 "core_profiles/profiles_1d[*]/electrons/temperature[0]"):
+                 "core_profiles/profiles_1d[:]/electrons/temperature[0]"):
         te0 = get(source_a, text)
         assert isinstance(te0, Trace)
         np.testing.assert_allclose(te0.values, implicit.values)
@@ -307,7 +362,7 @@ def test_time_axis_ranges_and_cuts(source_a):
 
 
 def test_shapes(source_a):
-    coils = get(source_a, "pf_active/coil[*]/element[*]/geometry")
+    coils = get(source_a, "pf_active/coil[:]/element[:]/geometry")
     assert isinstance(coils, Shapes) and coils.shape == "geometry"
     assert coils.time is None and coils.names == COILS
     outlines, _ = coils.at(3.0)
@@ -315,7 +370,7 @@ def test_shapes(source_a):
         outlines[6], [[1.1, 1.45], [1.4, 1.45], [1.4, 1.75], [1.1, 1.75], [1.1, 1.45]]
     )
     np.testing.assert_allclose(outlines[0][[0, -1]], [[0.65, 1.0], [0.65, 1.0]])  # outline
-    wall = get(source_a, "wall/description_2d[0]/limiter/unit[*]/outline")
+    wall = get(source_a, "wall/description_2d[0]/limiter/unit[:]/outline")
     assert wall.shape == "outline" and wall.names == ["first wall"]
     points = wall.at(None)[0][0]
     assert len(points) == 121  # closed: its ends are one segment apart
@@ -327,8 +382,8 @@ def test_shapes(source_a):
     np.testing.assert_allclose(point, [[1.82 + 0.03 * np.sin(5.0), 0.01 * np.sin(10.0)]])
     with pytest.raises(PathError, match="is a structure; continue the path"):
         get(source_a, "equilibrium/time_slice/boundary")
-    parts = get(source_a, "wall/description_2d[0]/limiter/unit[*]/outline/z",
-                x="wall/description_2d[0]/limiter/unit[*]/outline/r")
+    parts = get(source_a, "wall/description_2d[0]/limiter/unit[:]/outline/z",
+                x="wall/description_2d[0]/limiter/unit[:]/outline/r")
     assert isinstance(parts, Channels) and parts.x_axis.label == "r"
 
 

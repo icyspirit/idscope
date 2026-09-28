@@ -7,10 +7,11 @@ A signal path points at one quantity in an IDS, for example::
     magnetics/flux_loop[3]/flux/data
     magnetics/flux_loop(4)/flux/data
     core_profiles/profiles_1d/electrons/temperature[0]
-    pf_active/coil[*]/current/data
-    pf_active/coil[*]/current/data[0]
-    pf_active/coil[0:6]/element[*]/geometry
+    pf_active/coil[:]/current/data
+    pf_active/coil[:]/current/data[0]
+    pf_active/coil[0:6]/element[:]/geometry
     equilibrium/time_slice/profiles_2d[0]/psi[:, 40]
+    transpose(equilibrium/time_slice/profiles_2d[0]/psi)
 
 Rules:
 
@@ -19,27 +20,29 @@ Rules:
 - Indices are written Python style ``[i]`` (0-based, negative from the end) or
   Fortran style ``(i)`` (1-based), as in the Data Dictionary documentation. The two
   styles cannot be mixed in one path.
-- An index is a number, ``*`` or ``:`` (all elements), or a range ``a:b`` or
-  ``a:b:step`` (Fortran ranges include both ends: ``(1:6)`` is ``[0:6]``).
+- An index is a number, ``:`` (all elements) or a range ``a:b`` or ``a:b:step``
+  (Fortran ranges include both ends: ``(1:6)`` is ``[0:6]``).
 - The time-dependent array of structures (``profiles_1d``, ``time_slice``, ...) can
-  be left without index, or written ``(itime)`` as in the Data Dictionary: it is the
-  time axis of the signal. A number selects one time slice, a range some of them.
-  Whether an array of structures depends on time is only known from the Data
-  Dictionary, so it is checked during extraction.
-- Other arrays of structures need an index. ``*``, ``:`` or a range is a wildcard:
-  the signal then has a member per element, e.g. one time trace per coil for
-  ``pf_active/coil[*]/current/data``.
+  be left without index, or written ``[:]``, ``(:)`` or ``(itime)`` as in the Data
+  Dictionary: it is the time axis of the signal. A number selects one time slice, a
+  range some of them. Whether an array of structures depends on time is only known
+  from the Data Dictionary, so it is checked during extraction.
+- Other arrays of structures need an index. ``:`` or a range is a wildcard: the
+  signal then has a member per element, e.g. one time trace per coil for
+  ``pf_active/coil[:]/current/data``.
 - An index applies to the node it is written on. On the last (data) node it selects
   numpy style along the dimensions of the data, in the order of the Data Dictionary
   coordinates: ``temperature[0]`` is the value on the first radial grid point,
-  ``psi[:, 40]`` the 41st column of a map, and ``pf_active/coil[*]/current/data[0]``
+  ``psi[:, 40]`` the 41st column of a map, and ``pf_active/coil[:]/current/data[0]``
   the first current sample of every coil.
 - ``norm(path)`` normalizes every profile between its first and last point,
   ``(y - y[0]) / (y[-1] - y[0])``: ``norm(equilibrium/time_slice/profiles_1d/psi)``
   is the normalized poloidal flux psi_n, since the profiles go from the magnetic
   axis to the boundary.
-- ``transpose(path)`` swaps the two dimensions of a map. Dimensions are otherwise
-  never reordered: the first one is drawn along x, the second along y.
+- ``transpose(path, axes...)`` reorders the dimensions of the data (those left by
+  its index), as ``numpy.transpose``: ``transpose(path, 1, 0, 2)`` puts the second
+  dimension first. Without axes, their order is reversed. Dimensions are otherwise
+  never reordered.
 """
 
 import dataclasses
@@ -66,7 +69,7 @@ class Range(NamedTuple):
 
 
 ALL = Range()
-"""All elements: ``[*]``, ``[:]`` or ``(:)``."""
+"""All elements: ``[:]`` or ``(:)``."""
 
 Selector = Union[int, Range]
 Index = Optional[Selector]
@@ -107,6 +110,8 @@ class SignalPath:
     style, in the order of the Data Dictionary coordinates)."""
     transform: Optional[str] = None
     """Function applied to the data: ``norm`` or ``transpose``."""
+    transform_args: Tuple[int, ...] = ()
+    """Arguments of the function: the axes of ``transpose``."""
 
     @property
     def dd_path(self) -> str:
@@ -119,7 +124,9 @@ class SignalPath:
         if self.occurrence:
             head += f":{self.occurrence}"
         path = "/".join([head] + self._formatted())
-        return f"{self.transform}({path})" if self.transform else path
+        if not self.transform:
+            return path
+        return f"{self.transform}({', '.join([path, *map(str, self.transform_args)])})"
 
     @property
     def name(self) -> str:
@@ -144,8 +151,7 @@ class SignalPath:
 
     def _formatted(self) -> List[str]:
         formatted = [
-            part if index is None
-            else f"{part}[{'*' if index == ALL else _format_selector(index)}]"
+            part if index is None else f"{part}[{_format_selector(index)}]"
             for part, index in zip(self.parts, self.indices)
         ]
         if self.data_index:
@@ -194,15 +200,18 @@ def parse_signal_path(text: str) -> SignalPath:
                 f"Unknown function '{name}' in '{stripped}'; available: "
                 f"{', '.join(TRANSFORMS)}."
             )
-        if not function["inner"].strip():
+        arguments = _split_arguments(function["inner"])
+        if not arguments[0].strip():
             raise PathError(
                 f"'{stripped}' needs a signal path, for example "
                 f"'{name}(equilibrium/time_slice/profiles_1d/psi)'."
             )
-        inner = parse_signal_path(function["inner"])
+        inner = parse_signal_path(arguments[0])
         if inner.transform:
             raise PathError(f"Functions cannot be nested: '{stripped}'.")
-        return dataclasses.replace(inner, text=stripped, transform=name)
+        axes = _parse_axes(name, arguments[1:], stripped)
+        return dataclasses.replace(inner, text=stripped, transform=name,
+                                   transform_args=axes)
     match = _HEAD.fullmatch(stripped)
     if match is None:
         raise PathError(
@@ -219,6 +228,45 @@ def parse_signal_path(text: str) -> SignalPath:
         )
     parts, indices, data_index = _parse_nodes(rest, stripped)
     return SignalPath(stripped, ids_name, occurrence, parts, indices, data_index)
+
+
+def _split_arguments(text: str) -> List[str]:
+    """Arguments of a function, split on the commas that are not inside brackets
+    (e.g. in the index of ``data[:, 0]``)."""
+    arguments, depth, start = [], 0, 0
+    for pos, char in enumerate(text):
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif char == "," and depth == 0:
+            arguments.append(text[start:pos])
+            start = pos + 1
+    arguments.append(text[start:])
+    return arguments
+
+
+def _parse_axes(function: str, arguments: List[str], text: str) -> Tuple[int, ...]:
+    """The axes given to ``transpose``, as ``1, 0, 2``, ``(1, 0, 2)`` or ``[1, 0, 2]``."""
+    if function != "transpose":
+        if arguments:
+            raise PathError(f"{function}() takes a signal path only: '{text}'.")
+        return ()
+    if len(arguments) == 1 and arguments[0].strip()[:1] in "([":
+        inner = arguments[0].strip()
+        if inner[-1:] != {"(": ")", "[": "]"}[inner[0]]:
+            raise PathError(f"Invalid axes in '{text}': unbalanced brackets.")
+        arguments = inner[1:-1].split(",")
+    axes = []
+    for argument in arguments:
+        try:
+            axes.append(int(argument.strip()))
+        except ValueError:
+            raise PathError(
+                f"Invalid axis '{argument.strip()}' in '{text}': transpose() takes the "
+                "new order of the dimensions, e.g. transpose(path, 1, 0, 2)."
+            ) from None
+    return tuple(axes)
 
 
 def _parse_nodes(rest: str, text: str):
@@ -289,8 +337,10 @@ def _parse_selector(text: str, fortran: bool, where: str) -> Index:
     item = text.strip()
     if not item:
         raise PathError(f"Empty index for {where}.")
-    if item in ("*", ":"):
+    if item == ":":
         return ALL
+    if item == "*":
+        raise PathError(f"Invalid index '*' for {where}: write ':' for all elements.")
     if _GENERIC.fullmatch(item):
         return None
     if ":" in item:
@@ -314,8 +364,8 @@ def _number(text: str, fortran: bool, where: str) -> int:
         number = int(text.strip())
     except ValueError:
         raise PathError(
-            f"Invalid index '{text.strip()}' for {where}: expected a number, '*', ':' "
-            "or a range such as '0:6'."
+            f"Invalid index '{text.strip()}' for {where}: expected a number, ':' or a "
+            "range such as '0:6'."
         ) from None
     if fortran and number < 1:
         raise PathError(

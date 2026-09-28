@@ -30,10 +30,19 @@ def test_norm_function():
 
 def test_transpose_function():
     path = parse_signal_path("transpose(equilibrium/time_slice/profiles_2d[0]/psi)")
-    assert path.transform == "transpose"
+    assert path.transform == "transpose" and path.transform_args == ()
     assert path.canonical() == "transpose(equilibrium/time_slice/profiles_2d[0]/psi)"
     assert path.name == "psi"
     assert path.label == "profiles_2d[0]/psi"
+    # the axes, as numpy.transpose: listed, or in a tuple or list; commas inside
+    # the index of the path are not arguments
+    for text in ("transpose(bolometer/power_density/data[:, :, 0], 1, 0)",
+                 "transpose( bolometer/power_density/data[:, :, 0] , (1, 0) )",
+                 "transpose(bolometer/power_density/data[:, :, 0], [1, 0])"):
+        path = parse_signal_path(text)
+        assert path.data_index == (ALL, ALL, 0)
+        assert path.transform_args == (1, 0)
+        assert path.canonical() == "transpose(bolometer/power_density/data[:, :, 0], 1, 0)"
 
 
 @pytest.mark.parametrize(
@@ -43,6 +52,9 @@ def test_transpose_function():
          "Unknown function 'sqrt'.*available: norm, transpose"),
         ("norm(norm(core_profiles/profiles_1d/grid/psi))", "cannot be nested"),
         ("norm( )", "needs a signal path"),
+        ("norm(core_profiles/profiles_1d/grid/psi, 1)", "takes a signal path only"),
+        ("transpose(equilibrium/time_slice/profiles_2d[0]/psi, x)", "Invalid axis 'x'"),
+        ("transpose(equilibrium/time_slice/profiles_2d[0]/psi, (1, 0)", "unbalanced"),
     ],
 )
 def test_invalid_functions(text, message):
@@ -66,7 +78,7 @@ def test_occurrence_and_python_indices():
     assert path.occurrence == 2
     assert path.indices == (ALL, 1, None)
     assert path.text == "equilibrium:2/time_slice[:]/profiles_2d[1]/psi"
-    assert path.canonical() == "equilibrium:2/time_slice[*]/profiles_2d[1]/psi"
+    assert path.canonical() == "equilibrium:2/time_slice[:]/profiles_2d[1]/psi"
     assert path.label == "profiles_2d[1]/psi"
 
 
@@ -90,10 +102,10 @@ def test_dot_separators():
 
 
 def test_wildcards_ranges_and_numpy_index():
-    path = parse_signal_path("pf_active/coil[*]/current/data[0]")
+    path = parse_signal_path("pf_active/coil[:]/current/data[0]")
     assert path.indices == (ALL, None, None)
     assert path.data_index == (0,)
-    assert path.canonical() == "pf_active/coil[*]/current/data[0]"
+    assert path.canonical() == "pf_active/coil[:]/current/data[0]"
     assert path.label == "current/data[0]"
     path = parse_signal_path("equilibrium/time_slice/profiles_2d[0]/psi[:, 40]")
     assert path.indices == (None, 0, None)
@@ -104,7 +116,7 @@ def test_wildcards_ranges_and_numpy_index():
     assert path.data_index == (Range(0, 10, 2),)
     assert path.canonical() == "pf_active/coil[-1]/current/data[0:10:2]"
     assert parse_signal_path("pf_active/coil[6:]/current/data").indices[0] == Range(6)
-    path = parse_signal_path("equilibrium/time_slice/boundary/x_point[*]")
+    path = parse_signal_path("equilibrium/time_slice/boundary/x_point[:]")
     assert path.indices == (None, None, None) and path.data_index == (ALL,)
 
 
@@ -124,6 +136,7 @@ def test_wildcards_ranges_and_numpy_index():
         ("pf_active/coil(1]/current/data", "unbalanced"),
         ("pf_active/coil[0]/current/data[itime, 0]", "placeholders"),
         ("pf_active/coil[0]/current/data]", "unexpected"),
+        ("pf_active/coil[*]/current/data", "write ':' for all elements"),
     ],
 )
 def test_invalid_paths(text, message):

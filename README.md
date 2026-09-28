@@ -121,13 +121,13 @@ equilibrium/time_slice/profiles_2d[0]/psi            2D map, per time slice
 equilibrium/time_slice/profiles_2d[0]/psi[:, 40]     psi along R at the 41st Z, per time slice
 equilibrium:1/time_slice/global_quantities/ip        occurrence 1 of the IDS
 norm(equilibrium/time_slice/profiles_1d/psi)         psi normalized per time slice: psi_n
-pf_active/coil[*]/current/data                       a time trace per coil
+pf_active/coil[:]/current/data                       a time trace per coil
 pf_active/coil[0:6]/current/data                     the first six coils (Fortran: coil(1:6))
-pf_active/coil[*]/current/data[0]                    the first current sample of every coil
-core_profiles/profiles_1d/ion[*]/temperature         a profile per ion species
-core_profiles/profiles_1d/ion[*]/temperature[0]      the central temperature of every species
-pf_active/coil[*]/element[*]/geometry                the coils in (R, Z)
-wall/description_2d[0]/limiter/unit[*]/outline       the wall in (R, Z)
+pf_active/coil[:]/current/data[0]                    the first current sample of every coil
+core_profiles/profiles_1d/ion[:]/temperature         a profile per ion species
+core_profiles/profiles_1d/ion[:]/temperature[0]      the central temperature of every species
+pf_active/coil[:]/element[:]/geometry                the coils in (R, Z)
+wall/description_2d[0]/limiter/unit[:]/outline       the wall in (R, Z)
 equilibrium/time_slice/boundary/outline              the plasma boundary in (R, Z), per time slice
 equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a point per time slice
 ```
@@ -137,24 +137,27 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
   Dictionary documentation are accepted too). An index selects one time slice, a
   range some.
 - Other arrays of structures need an index: `ion[0]`, `flux_loop(1)`, `coil[-1]`
-  (the last one), or a **wildcard**: `*` or `:` for all elements, `a:b` or `a:b:step`
+  (the last one), or a **wildcard**: `:` for all elements, `a:b` or `a:b:step`
   for some of them (Fortran ranges `(a:b)` include both ends). A path with wildcards
   has a member per element, named after its `name` (or `label`, `identifier`): a
   curve per coil in time traces, a bar per coil at the selected time in a profile
-  panel. Wildcards can be nested (`coil[*]/element[*]`).
+  panel. Wildcards can be nested (`coil[:]/element[:]`).
 - An index applies to the node it is written on. On the data node it selects numpy
   style along the dimensions of the data, for every element of the wildcards: so
-  `coil[*]/current/data[2]` is the third current sample of every coil (a bar per
-  coil), `profiles_1d/ion[*]/temperature[0]` the central temperature of every ion
+  `coil[:]/current/data[2]` is the third current sample of every coil (a bar per
+  coil), `profiles_1d/ion[:]/temperature[0]` the central temperature of every ion
   species over time, and `profiles_2d[0]/psi[:, 40]` a column of the map. Which
   coils or species is written on the array of structures: `coil[0:6]`, `ion[1]`.
 - **Dimensions** keep the order of the Data Dictionary coordinates, which the tooltip
-  of the IDS browser shows (e.g. `psi`: `grid/dim1, grid/dim2`). An index selects
+  of the IDS browser shows (e.g. `psi`: `grid/dim1, grid/dim2`, and
+  `bolometer/power_density/data`: `grid/dim1, grid/dim2, time`). An index selects
   along them in that order, and a map draws the first along x and the second along
-  y. idscope never reorders them: `transpose(path)` swaps the two dimensions of a
-  map. The only dimension with a role of its own is time, recognized from the
-  coordinates wherever it is: it is the time axis of traces and time-space images,
-  and the one the time bar moves along.
+  y. idscope never reorders them by itself: `transpose(path, axes...)` does, as
+  `numpy.transpose` does on the data left by the index. `transpose(path, 1, 0, 2)`
+  puts the second dimension first; without axes the order is reversed, which swaps
+  the two dimensions of a map. The only dimension with a role of its own is time,
+  recognized from the coordinates wherever it is: it is the time axis of traces and
+  time-space images, and the one the time bar moves along.
 - A path to a structure that describes a shape draws it in the poloidal plane, over
   maps: the 2D geometry of coils and passive loops (outline, rectangle,
   parallelogram, arcs of circle, annulus or thick line), `r`/`z` outlines and
@@ -188,7 +191,7 @@ names; this is noted in the log. `--dd-version` selects the version to use.
 | `spacetime` | a profile as an image z(t, x) | 1D quantities that depend on time |
 
 `auto` (the default) picks the kind from the first signal; a value per element of a
-wildcard (e.g. `coil[*]/element[*]/turns_with_sign`) makes bars. Maps and time-space
+wildcard (e.g. `coil[:]/element[:]/turns_with_sign`) makes bars. Maps and time-space
 images show one source at a time; choose it with the *Show* selector of the panel.
 Shapes and profiles added to a map are drawn over it for every source, e.g. the coils
 and the plasma boundary over psi(R, Z); a map panel can also hold shapes only. With
@@ -227,7 +230,7 @@ columns:
           - equilibrium/time_slice/profiles_2d[0]/psi
           - path: equilibrium/time_slice/boundary/outline
             label: boundary
-          - pf_active/coil[*]/element[*]/geometry
+          - pf_active/coil[:]/element[:]/geometry
 ```
 
 Panel options: `title`, `kind`, `signals`, `x_label`, `y_label`, `x_range`, `y_range`,

@@ -2,7 +2,7 @@
 #
 #   idscope -T pf_active SOURCE [SOURCE ...]
 #
-# "[*]" selects every element of an array of structures: here every coil, drawn as
+# "[:]" selects every element of an array of structures: here every coil, drawn as
 # a curve, a bar or a shape named after it. Coil currents are per turn, as the Data
 # Dictionary defines coil/current. The cross-section adds the plasma equilibrium and
 # the wall when the source holds them.
@@ -12,18 +12,18 @@ columns:
     panels:
       - title: Coil currents
         signals:
-          - path: pf_active/coil[*]/current/data
+          - path: pf_active/coil[:]/current/data
             scale: 1.0e-3
         y_label: I [kA]
       - title: Coil voltages
         signals:
-          - path: pf_active/coil[*]/voltage/data
+          - path: pf_active/coil[:]/voltage/data
             scale: 1.0e-3
         y_label: V [kV]
       - title: Coil currents at the selected time
         kind: profile
         signals:
-          - path: pf_active/coil[*]/current/data
+          - path: pf_active/coil[:]/current/data
             scale: 1.0e-3
         y_label: I [kA]
   - panels:
@@ -39,9 +39,9 @@ columns:
             label: boundary
           - path: equilibrium/time_slice/global_quantities/magnetic_axis
             label: magnetic axis
-          - path: pf_active/coil[*]/element[*]/geometry | pf_active/coil[*]/geometry
+          - path: pf_active/coil[:]/element[:]/geometry | pf_active/coil[:]/geometry
             label: coils
             color: "#4c4c4c"
-          - path: wall/description_2d[0]/limiter/unit[*]/outline
+          - path: wall/description_2d[0]/limiter/unit[:]/outline
             label: wall
             color: "#7f7f7f"

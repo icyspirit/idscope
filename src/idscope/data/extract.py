@@ -11,9 +11,9 @@ kind                      examples
                           ``magnetics/flux_loop[0]/flux/data``
 ``profile`` (y vs x)      ``core_profiles/profiles_1d/electrons/temperature``
 ``map``    (z vs x1, x2)  ``equilibrium/time_slice/profiles_2d[0]/psi``
-``shape``  (in R, Z)      ``pf_active/coil[*]/element[*]/geometry``,
-                          ``wall/description_2d[0]/limiter/unit[*]/outline``,
-                          ``equilibrium/time_slice/boundary/x_point[*]``
+``shape``  (in R, Z)      ``pf_active/coil[:]/element[:]/geometry``,
+                          ``wall/description_2d[0]/limiter/unit[:]/outline``,
+                          ``equilibrium/time_slice/boundary/x_point[:]``
 ========================  =========================================================
 
 Profiles and maps are usually time dependent: they have one curve or image per time
@@ -21,7 +21,7 @@ slice and are shown at the time selected in the GUI. Coordinates (time, radial g
 ...) come from the Data Dictionary through ``node.coordinates``, which takes care of
 homogeneous and heterogeneous time and of alternative coordinates.
 
-A path with wildcards (``pf_active/coil[*]/current/data``) gives :class:`Channels`:
+A path with wildcards (``pf_active/coil[:]/current/data``) gives :class:`Channels`:
 one trace or profile per element of the arrays of structures, named after them.
 """
 
@@ -244,8 +244,8 @@ class MapSeries(SignalData):
 class Channels(SignalData):
     """A signal per element of the wildcard arrays of structures of a path.
 
-    ``pf_active/coil[*]/current/data`` has a trace per coil, and
-    ``core_profiles/profiles_1d/ion[*]/temperature`` a profile per ion species.
+    ``pf_active/coil[:]/current/data`` has a trace per coil, and
+    ``core_profiles/profiles_1d/ion[:]/temperature`` a profile per ion species.
     The members are all traces or all profiles (``kind`` is theirs); :attr:`names`
     come from the ``name``, ``label`` or ``identifier`` of the elements.
     """
@@ -349,6 +349,8 @@ class _Plan(NamedTuple):
     """``geometry``, ``outline`` or ``point`` for shapes, ``None`` for data."""
     selectors: Tuple[Selector, ...]
     """Selectors on the dimensions of the data node."""
+    axes: Optional[Tuple[int, ...]] = None
+    """New order of the dimensions left by the selectors (``transpose``)."""
 
 
 def is_time_aos(meta) -> bool:
@@ -428,7 +430,7 @@ def plan_path(ids_meta, path: SignalPath) -> _Plan:
                 f"quantities (e.g. {children})."
             )
         if leaf.data_type is IDSDataType.STRUCT_ARRAY:
-            # e.g. boundary/x_point[*]: the index is the one of the array
+            # e.g. boundary/x_point[:]: the index is the one of the array
             indices[-1] = data_index.pop(0) if data_index else None
     elif leaf.data_type not in (IDSDataType.FLT, IDSDataType.INT):
         raise PathError(
@@ -472,12 +474,39 @@ def plan_path(ids_meta, path: SignalPath) -> _Plan:
         elif index is None:
             raise PathError(
                 f"'{node}' is an array of structures that does not depend on time: "
-                f"give an index, e.g. '{name}[0]', or '{name}[*]' for all of them."
+                f"give an index, e.g. '{name}[0]', or '{name}[:]' for all of them."
             )
         else:
             channels.append(pos)
     steps = tuple(_Step(*item) for item in zip(path.parts, metas, indices))
-    return _Plan(steps, time_pos, tuple(channels), leaf, shape, selectors)
+    axes = _transpose_axes(path, leaf, shape, selectors)
+    return _Plan(steps, time_pos, tuple(channels), leaf, shape, selectors, axes)
+
+
+def _transpose_axes(path: SignalPath, leaf, shape, selectors) -> Optional[Tuple[int, ...]]:
+    """The new order of the dimensions left by the index of the data node, for
+    ``transpose`` (numpy style: reversed when no axes are given)."""
+    if path.transform != "transpose":
+        return None
+    if shape is not None:
+        raise PathError(f"transpose() reorders the dimensions of data; '{path.text}' "
+                        "is a shape.")
+    full = list(selectors) + [ALL] * (leaf.ndim - len(selectors))
+    names = dimension_names(leaf)
+    left = [names[d] for d, selector in enumerate(full) if isinstance(selector, Range)]
+    if len(left) < 2:
+        raise PathError(
+            f"'{path.text}': '{path.dd_path}' has {len(left)} dimension"
+            f"{'s' if len(left) != 1 else ''} left, nothing to transpose."
+        )
+    axes = path.transform_args or tuple(reversed(range(len(left))))
+    if sorted(axes) != list(range(len(left))):
+        raise PathError(
+            f"'{path.text}': transpose() needs a new order of the {len(left)} "
+            f"dimensions ({', '.join(left)}), i.e. the numbers 0 to {len(left) - 1} "
+            f"each once, not {', '.join(map(str, axes))}."
+        )
+    return tuple(axes)
 
 
 # ---------------------------------------------------------------------------------
@@ -690,31 +719,10 @@ def extract_signal(ids, path: SignalPath) -> SignalData:
         PathError: when the path does not match the Data Dictionary.
         NoDataError: when the data is not filled.
     """
-    data = _extract(ids, path)
+    data = _extract(ids, path)  # transpose() is applied while reading
     if path.transform == "norm":
         data = normalize(data)
-    elif path.transform == "transpose":
-        data = transpose(data)
     return data
-
-
-def transpose(data: SignalData) -> SignalData:
-    """The map with its two dimensions swapped: x1 becomes the vertical axis."""
-    if isinstance(data, Channels) and data.kind == MAP:
-        return Channels(data.path, [transpose(m) for m in data.members], data.names,
-                        data.value_axis, data.documentation, data.axis_label)
-    if not isinstance(data, MapSeries):
-        raise PathError(
-            f"transpose() swaps the two dimensions of a map, but '{data.path.text}' is "
-            f"a {data.kind}."
-        )
-
-    def load(i: int):
-        x1, x2, z = data.at_index(i)
-        return x2, x1, z.T
-
-    return MapSeries(data.path, data.time, data.count, load, data.x2_axis, data.x_axis,
-                     data.value_axis, data.documentation, data.fixed_time)
 
 
 def normalize(data: SignalData) -> SignalData:
@@ -798,7 +806,8 @@ def _extract_member(ids, path: SignalPath, plan: _Plan, key: Dict[int, int]):
             if outline is None:
                 raise NoDataError(f"'{path.text}' is not filled.")
             return Shapes(path, None, [[outline]], plan.shape, [""], doc, fixed_time)
-        return _from_leaf(path, node, plan.selectors, value_axis, doc, fixed_time)
+        return _from_leaf(path, node, plan.selectors, value_axis, doc, fixed_time,
+                          plan.axes)
 
     tp = plan.time_pos
     parent = _walk(ids, plan, 0, tp, key, fixed_times)
@@ -835,6 +844,8 @@ def _extract_member(ids, path: SignalPath, plan: _Plan, key: Dict[int, int]):
 
     full = list(plan.selectors) + [ALL] * (meta.ndim - len(plan.selectors))
     kept = [dim for dim, selector in enumerate(full) if isinstance(selector, Range)]
+    if plan.axes is not None:  # transpose(): the dimensions in their new order
+        kept = [kept[axis] for axis in plan.axes]
 
     def slice_data(i: int):
         """Data node, value (after the selectors) and selectors of slice i, or
@@ -850,7 +861,10 @@ def _extract_member(ids, path: SignalPath, plan: _Plan, key: Dict[int, int]):
         except NoDataError as exc:
             errors.append(exc)
             return None, None, None
-        return leaf, value[_numpy_index(selectors)], selectors
+        selected = value[_numpy_index(selectors)]
+        if plan.axes is not None:
+            selected = np.transpose(selected, plan.axes)
+        return leaf, selected, selectors
 
     def coordinate(leaf, dim: int, selectors, size: int):
         x, axis = _coordinate(leaf, dim, size)
@@ -926,8 +940,13 @@ def _map_axes(meta, dims) -> Tuple[Axis, Axis]:
     return Axis(names[dims[0]], ""), Axis(names[dims[1]], "")
 
 
-def _from_leaf(path, leaf, selectors, value_axis, doc, fixed_time) -> SignalData:
-    """Build a signal from a single data node (no time array of structures)."""
+def _from_leaf(path, leaf, selectors, value_axis, doc, fixed_time,
+               axes: Optional[Tuple[int, ...]] = None) -> SignalData:
+    """Build a signal from a single data node (no time array of structures).
+
+    The dimensions left by the selectors keep their order, or take the one of
+    ``axes`` (transpose); time is recognized from the coordinates wherever it is.
+    """
     meta = leaf.metadata
     value = _leaf_array(leaf)
     if value.size == 0 or (value.ndim == 0 and np.isnan(value)):
@@ -942,6 +961,9 @@ def _from_leaf(path, leaf, selectors, value_axis, doc, fixed_time) -> SignalData
         time_dim = None
     kept = [d for d, selector in enumerate(full) if isinstance(selector, Range)]
     selected = value[_numpy_index(full)]
+    if axes is not None:
+        selected = np.transpose(selected, axes)
+        kept = [kept[axis] for axis in axes]
     other = [d for d in kept if d != time_dim]
 
     def coordinate(dim: int):

@@ -26,7 +26,7 @@ class BrowseItem(NamedTuple):
     dd_path: str
     """Data Dictionary path without indices, e.g. ``profiles_1d/electrons/density``."""
     signal_path: str
-    """Suggested signal path: with ``[*]`` (all elements) for the arrays of
+    """Suggested signal path: with ``[:]`` (all elements) for the arrays of
     structures that do not depend on time, ``[0]`` for maps."""
     kind: str
     """``trace``, ``profile``, ``map``, ``shape``, ``constant`` or ``unsupported``."""
@@ -63,7 +63,7 @@ def classify(ids_meta, dd_path: str):
         kind = SHAPE if shape_kind(meta) else None
         if kind is None:
             return None
-        return kind, time_aos, _signal_path(parts, "*")
+        return kind, time_aos, _signal_path(parts, ":")
     has_time_dim = any(c.is_time_coordinate for c in meta.coordinates)
     time_dependent = time_aos or has_time_dim
     other_dims = meta.ndim - (has_time_dim and not time_aos)
@@ -76,7 +76,7 @@ def classify(ids_meta, dd_path: str):
     else:
         kind = UNSUPPORTED
     # All elements, except for maps: one map is shown at a time
-    return kind, time_dependent, _signal_path(parts, "0" if kind == MAP else "*")
+    return kind, time_dependent, _signal_path(parts, "0" if kind == MAP else ":")
 
 
 def _signal_path(parts, index: str) -> str:
