@@ -317,3 +317,18 @@ def test_wildcards_in_panels(window):
     sample = source.signal(parse_signal_path("pf_active/coil[:]/current/data[5]"))
     np.testing.assert_allclose(panel._bars[0].item.opts["height"],
                                [1e-3 * float(m.values) for m in sample.members])
+
+
+def test_time_of_the_configuration(qtbot, config_path):
+    from idscope.gui import create_application, create_window
+
+    create_application()
+    config = load_config(config_path)
+    config.time = 7.0
+    win = create_window(config, config_path)
+    qtbot.addWidget(win)
+    assert win.time == 7.0
+    assert win.panels[0]._time_line.value() == 7.0
+    # the time bar shows it too
+    assert win.timebar.spin.value() == 7.0
+    assert win.timebar.grid[win.timebar.slider.value()] == 7.0

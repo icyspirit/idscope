@@ -424,6 +424,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timebar.set_grid(grid)
         if self.time is None and len(grid):
             self.set_time(float(grid[len(grid) // 2]))
+        else:  # e.g. the time of a configuration, which the panels were loaded at
+            self.timebar.set_time(self.time)
 
     def set_time(self, t: Optional[float]) -> None:
         """Move the time cursor: profiles and maps show the slice closest to t."""
