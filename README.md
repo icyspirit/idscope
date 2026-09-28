@@ -123,8 +123,9 @@ equilibrium:1/time_slice/global_quantities/ip        occurrence 1 of the IDS
 norm(equilibrium/time_slice/profiles_1d/psi)         psi normalized per time slice: psi_n
 pf_active/coil[*]/current/data                       a time trace per coil
 pf_active/coil[0:6]/current/data                     the first six coils (Fortran: coil(1:6))
-pf_active/coil[*]/current/data[:, 0]                 the first current sample of every coil
+pf_active/coil[*]/current/data[0]                    the first current sample of every coil
 core_profiles/profiles_1d/ion[*]/temperature         a profile per ion species
+core_profiles/profiles_1d/ion[*]/temperature[0]      the central temperature of every species
 pf_active/coil[*]/element[*]/geometry                the coils in (R, Z)
 wall/description_2d[0]/limiter/unit[*]/outline       the wall in (R, Z)
 equilibrium/time_slice/boundary/outline              the plasma boundary in (R, Z), per time slice
@@ -141,14 +142,12 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
   has a member per element, named after its `name` (or `label`, `identifier`): a
   curve per coil in time traces, a bar per coil at the selected time in a profile
   panel. Wildcards can be nested (`coil[*]/element[*]`).
-- An index on the last node selects numpy style along every dimension of the
-  result: first one per wildcard, in the order of the path, then those of the data.
-  So `coil[*]/current/data[:, 0]` is the first sample of every coil,
-  `coil[*]/current/data[2]` the current of coil 2, and
-  `profiles_1d/ion[*]/temperature[:, 0]` the central temperature of every ion
-  species. The time array of structures is the time axis, not a wildcard, even
-  written `profiles_1d[:]`: `profiles_1d[:]/electrons/temperature[0]` is the
-  temperature on the first grid point, over time.
+- An index applies to the node it is written on. On the data node it selects numpy
+  style along the dimensions of the data, for every element of the wildcards: so
+  `coil[*]/current/data[2]` is the third current sample of every coil (a bar per
+  coil), `profiles_1d/ion[*]/temperature[0]` the central temperature of every ion
+  species over time, and `profiles_2d[0]/psi[:, 40]` a column of the map. Which
+  coils or species is written on the array of structures: `coil[0:6]`, `ion[1]`.
 - A path to a structure that describes a shape draws it in the poloidal plane, over
   maps: the 2D geometry of coils and passive loops (outline, rectangle,
   parallelogram, arcs of circle, annulus or thick line), `r`/`z` outlines and

@@ -223,23 +223,31 @@ def test_wildcard_traces(source_a):
     assert get(source_a, "pf_active/coil(7:12)/current/data").names == COILS[6:]
 
 
-def test_numpy_index_after_wildcards(source_a):
-    # the first index is for the wildcard (coils), the second for the data (time)
-    first = get(source_a, "pf_active/coil[*]/current/data[:, 0]")
-    assert isinstance(first, Channels)
+def test_index_on_the_data_of_every_element(source_a):
+    # The index of the data node selects along the data (time), for every coil
+    first = get(source_a, "pf_active/coil[*]/current/data[0]")
+    assert isinstance(first, Channels) and first.names == COILS
     assert all(member.time is None for member in first.members)
     assert first.members[0].fixed_time == 0.0
     np.testing.assert_allclose(
         [float(m.values) for m in first.members[:3]], [12e3, 15e3, 18e3]
     )
-    last_coil = get(source_a, "pf_active/coil[*]/current/data[-1]")
+    third = get(source_a, "pf_active/coil[*]/current/data[2]")  # t = 0.5 s
+    assert third.members[0].fixed_time == pytest.approx(0.5)
+    np.testing.assert_allclose(
+        [float(m.values) for m in third.members[:3]], [7.5e3, 9e3, 10.5e3]
+    )
+    last_coil = get(source_a, "pf_active/coil[-1]/current/data")
     assert isinstance(last_coil, Trace) and last_coil.values[-1] == pytest.approx(-4e3)
-    with pytest.raises(PathError, match="3 indices on its last node, for 1 wildcard"):
-        get(source_a, "pf_active/coil[*]/current/data[:, 0, 1]")
+    # current/data has one dimension: the wildcard does not add one
+    with pytest.raises(PathError, match="'coil/current/data' has 1 dimension, but 2"):
+        get(source_a, "pf_active/coil[*]/current/data[:, 0]")
     with pytest.raises(PathError, match="or 'coil\\[\\*\\]' for all of them"):
         get(source_a, "pf_active/coil/current/data")
     with pytest.raises(NoDataError, match="Index 20 is out of range for 'coil'"):
-        get(source_a, "pf_active/coil[*]/current/data[20]")
+        get(source_a, "pf_active/coil[20]/current/data")
+    with pytest.raises(NoDataError, match="Index 99 is out of range for 'coil/current"):
+        get(source_a, "pf_active/coil[*]/current/data[99]")
 
 
 def test_wildcards_below_the_time_axis(source_a):
@@ -248,8 +256,13 @@ def test_wildcards_below_the_time_axis(source_a):
     assert ions.names == ["D", "C"]
     # the second species is missing in the last three time slices
     assert [len(y) for y in ions.members[1].ys[-4:]] == [51, 0, 0, 0]
-    central = get(source_a, "core_profiles/profiles_1d/ion[*]/temperature[:, 0]")
+    central = get(source_a, "core_profiles/profiles_1d/ion[*]/temperature[0]")
+    assert isinstance(central, Channels) and central.names == ["D", "C"]
     assert central.kind == "trace" and central.members[0].values.shape == (41,)
+    np.testing.assert_allclose(central.members[0].values,
+                               [y[0] if len(y) else np.nan for y in ions.members[0].ys])
+    with pytest.raises(PathError, match="'profiles_1d/ion/temperature' has 1 dimension"):
+        get(source_a, "core_profiles/profiles_1d/ion[*]/temperature[:, 0]")
     psi_n = get(source_a, "core_profiles/profiles_1d/ion[*]/temperature",
                 x="norm(core_profiles/profiles_1d/grid/psi)")
     assert isinstance(psi_n, Channels) and psi_n.x_axis.title() == "psi_n"
@@ -264,7 +277,7 @@ def test_time_axis_ranges_and_cuts(source_a):
         te0 = get(source_a, text)
         assert isinstance(te0, Trace)
         np.testing.assert_allclose(te0.values, implicit.values)
-    with pytest.raises(PathError, match="for 0 wildcards and 1 dimension"):
+    with pytest.raises(PathError, match="has 1 dimension, but 2 indices are given"):
         get(source_a, "core_profiles/profiles_1d[:]/electrons/temperature[:, 0]")
     last = get(source_a, "core_profiles/profiles_1d[-1]/electrons/temperature")
     assert last.time is None and last.fixed_time == pytest.approx(10.0)

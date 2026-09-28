@@ -81,11 +81,15 @@ def test_dot_separators():
 
 
 def test_wildcards_ranges_and_numpy_index():
-    path = parse_signal_path("pf_active/coil[*]/current/data[:, 0]")
+    path = parse_signal_path("pf_active/coil[*]/current/data[0]")
     assert path.indices == (ALL, None, None)
-    assert path.data_index == (ALL, 0)
-    assert path.canonical() == "pf_active/coil[*]/current/data[:, 0]"
-    assert path.label == "current/data[:, 0]"
+    assert path.data_index == (0,)
+    assert path.canonical() == "pf_active/coil[*]/current/data[0]"
+    assert path.label == "current/data[0]"
+    path = parse_signal_path("equilibrium/time_slice/profiles_2d[0]/psi[:, 40]")
+    assert path.indices == (None, 0, None)
+    assert path.data_index == (ALL, 40)
+    assert path.canonical() == "equilibrium/time_slice/profiles_2d[0]/psi[:, 40]"
     path = parse_signal_path("pf_active.coil[-1].current.data[0:10:2]")
     assert path.indices == (-1, None, None)
     assert path.data_index == (Range(0, 10, 2),)

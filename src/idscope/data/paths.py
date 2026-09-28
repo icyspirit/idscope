@@ -8,8 +8,9 @@ A signal path points at one quantity in an IDS, for example::
     magnetics/flux_loop(4)/flux/data
     core_profiles/profiles_1d/electrons/temperature[0]
     pf_active/coil[*]/current/data
-    pf_active/coil[*]/current/data[:, 0]
+    pf_active/coil[*]/current/data[0]
     pf_active/coil[0:6]/element[*]/geometry
+    equilibrium/time_slice/profiles_2d[0]/psi[:, 40]
 
 Rules:
 
@@ -28,12 +29,10 @@ Rules:
 - Other arrays of structures need an index. ``*``, ``:`` or a range is a wildcard:
   the signal then has a member per element, e.g. one time trace per coil for
   ``pf_active/coil[*]/current/data``.
-- The index on the last node selects numpy style along all dimensions of the
-  result: first one per wildcard (in the order of the path), then those of the data
-  node. The time array of structures is not a wildcard, even written ``[:]``: it is
-  the time axis. ``profiles_1d/electrons/temperature[0]`` is the value on the first
-  radial grid point, and ``pf_active/coil[*]/current/data[:, 0]`` the first current
-  sample of every coil.
+- An index applies to the node it is written on. On the last (data) node it selects
+  numpy style along the dimensions of the data: ``temperature[0]`` is the value on
+  the first radial grid point, ``psi[:, 40]`` the 41st column of a map, and
+  ``pf_active/coil[*]/current/data[0]`` the first current sample of every coil.
 - ``norm(path)`` normalizes every profile between its first and last point,
   ``(y - y[0]) / (y[-1] - y[0])``: ``norm(equilibrium/time_slice/profiles_1d/psi)``
   is the normalized poloidal flux psi_n, since the profiles go from the magnetic

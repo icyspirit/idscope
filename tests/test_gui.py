@@ -291,7 +291,7 @@ def test_wildcards_in_panels(window):
     assert pens[0].style() != pens[3].style()
 
     # a value per flux loop: bars, per loop and source
-    panel.config.signals = [SignalConfig("magnetics/flux_loop[*]/flux/data[:, -1]")]
+    panel.config.signals = [SignalConfig("magnetics/flux_loop[*]/flux/data[-1]")]
     window.refresh_panel(panel)
     assert panel.kind == "profile" and len(panel._bars) == 2
     ticks = panel.plot.getAxis("bottom")._tickLevels

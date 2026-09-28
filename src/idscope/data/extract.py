@@ -34,7 +34,7 @@ from imas.ids_data_type import IDSDataType
 from imas.ids_defs import EMPTY_FLOAT, EMPTY_INT
 from imas.ids_primitive import IDSPrimitive
 
-from idscope.data.paths import ALL, Range, Selector, SignalPath
+from idscope.data.paths import ALL, Index, Range, Selector, SignalPath
 from idscope.errors import NoDataError, PathError
 
 logger = logging.getLogger(__name__)
@@ -333,10 +333,9 @@ class Shapes(SignalData):
 class _Step(NamedTuple):
     name: str
     meta: object
-    chain: Tuple[Selector, ...]
-    """Selectors applied in turn to the elements of an array of structures: its
-    own index, then the one given for it on the last node. Empty for other nodes,
-    and for a time array of structures without index."""
+    index: Index
+    """Index of an array of structures: one element (int), several (Range), or
+    ``None`` for a time array of structures without index."""
 
 
 class _Plan(NamedTuple):
@@ -441,36 +440,26 @@ def plan_path(ids_meta, path: SignalPath) -> _Plan:
         if index is not None and meta.data_type is not IDSDataType.STRUCT_ARRAY:
             node = "/".join(path.parts[:pos + 1])
             raise PathError(f"'{node}' is a structure and cannot be indexed.")
-    # The first indices of the last node are for the wildcards, in path order. The
-    # time array of structures is not one of them, even as profiles_1d[:]: it is the
-    # time axis, and takes its own index (profiles_1d[3], profiles_1d[0:10]).
-    wildcards = [
-        pos for pos, (meta, index) in enumerate(zip(metas, indices))
-        if isinstance(index, Range) and not is_time_aos(meta)
-    ]
-    chains = [() if index is None else (index,) for index in indices]
-    for pos, selector in zip(wildcards, data_index):
-        chains[pos] += (selector,)
-    selectors = tuple(data_index[len(wildcards):])
+    # An index applies to the node it is written on: the one of the data node
+    # selects along the dimensions of the data, whatever the wildcards before it
+    selectors = tuple(data_index)
     if shape is not None and selectors:
+        if leaf.data_type is IDSDataType.STRUCT_ARRAY:
+            raise PathError(f"'{here}' is an array of structures and takes one index.")
         raise PathError(f"'{here}' is a structure and cannot be indexed.")
     if shape is None and len(selectors) > leaf.ndim:
-        if leaf.ndim == 0 and not wildcards:
+        if leaf.ndim == 0:
             raise PathError(f"'{here}' is a scalar and cannot be indexed.")
         raise PathError(
-            f"'{path.text}' has {len(path.data_index)} indices on its last node, for "
-            f"{len(wildcards)} wildcard{'s' if len(wildcards) != 1 else ''} and "
-            f"{leaf.ndim} dimension{'s' if leaf.ndim != 1 else ''} of '{leaf.name}'."
+            f"'{here}' has {leaf.ndim} dimension{'s' if leaf.ndim != 1 else ''}, but "
+            f"{len(selectors)} indices are given."
         )
 
     time_pos = None
     channels = []
-    for pos, meta in enumerate(metas):
-        chain = chains[pos]
-        if meta.data_type is not IDSDataType.STRUCT_ARRAY:
-            continue
-        if any(not isinstance(selector, Range) for selector in chain):
-            continue  # one element
+    for pos, (meta, index) in enumerate(zip(metas, indices)):
+        if meta.data_type is not IDSDataType.STRUCT_ARRAY or isinstance(index, int):
+            continue  # not an array of structures, or one element of it
         node = "/".join(path.parts[:pos + 1])
         name = path.parts[pos]
         if is_time_aos(meta):
@@ -480,14 +469,14 @@ def plan_path(ids_meta, path: SignalPath) -> _Plan:
                     f"an index: '{path.parts[time_pos]}' and '{name}'."
                 )
             time_pos = pos
-        elif not chain:
+        elif index is None:
             raise PathError(
                 f"'{node}' is an array of structures that does not depend on time: "
                 f"give an index, e.g. '{name}[0]', or '{name}[*]' for all of them."
             )
         else:
             channels.append(pos)
-    steps = tuple(_Step(*item) for item in zip(path.parts, metas, chains))
+    steps = tuple(_Step(*item) for item in zip(path.parts, metas, indices))
     return _Plan(steps, time_pos, tuple(channels), leaf, shape, selectors)
 
 
@@ -511,24 +500,23 @@ def _leaf_array(leaf) -> np.ndarray:
     return _as_float_array(leaf.value, meta.data_type)
 
 
-def _elements(aos, chain: Sequence[Selector], what: str) -> Union[int, range]:
-    """The element (int) or elements (range) of an array of structures that the
-    selectors of ``chain`` pick, in turn."""
+def _elements(aos, index: Index, what: str) -> Union[int, range]:
+    """The element (int) or elements (range) of an array of structures that
+    ``index`` picks (all of them for ``None``)."""
     selection = range(len(aos))
-    for selector in chain:
-        if isinstance(selector, Range):
-            selection = selection[selector.as_slice()]
-            continue
-        size = len(selection)
-        if not -size <= selector < size:
-            if len(aos) == 0:
-                raise NoDataError(f"'{what}' is empty.")
-            raise NoDataError(
-                f"Index {selector} is out of range for '{what}', which has {size} "
-                f"element{'s' if size != 1 else ''}."
-            )
-        selection = selection[selector]
-    return selection
+    if index is None:
+        return selection
+    if isinstance(index, Range):
+        return selection[index.as_slice()]
+    size = len(selection)
+    if not -size <= index < size:
+        if size == 0:
+            raise NoDataError(f"'{what}' is empty.")
+        raise NoDataError(
+            f"Index {index} is out of range for '{what}', which has {size} "
+            f"element{'s' if size != 1 else ''}."
+        )
+    return selection[index]
 
 
 def _walk(node, plan: _Plan, start: int, stop: int, key: Dict[int, int],
@@ -549,7 +537,7 @@ def _walk(node, plan: _Plan, start: int, stop: int, key: Dict[int, int],
                 if index >= len(child):
                     raise NoDataError(f"'{what}' has no element {index}.")
             else:
-                index = _elements(child, step.chain, what)
+                index = _elements(child, step.index, what)
                 if is_time_aos(child.metadata):
                     times_out.append(float(aos_times(child)[index]))
             child = child[index]
@@ -616,18 +604,18 @@ def _members(ids, plan: _Plan) -> List[Tuple[Dict[int, int], str]]:
             return
         what = child.metadata.path_string
         if pos in plan.channels:
-            selection = _elements(child, step.chain, what)
+            selection = _elements(child, step.index, what)
             for i in selection:
                 sub = key + (i,)
                 if sub not in names:
                     names[sub] = (_element_name(child[i], step.name, i), len(selection))
                 walk(child[i], pos + 1, sub, labels + (names[sub],))
         elif pos == plan.time_pos:
-            for i in _elements(child, step.chain, what):
+            for i in _elements(child, step.index, what):
                 walk(child[i], pos + 1, key, labels)
         else:
             try:
-                index = _elements(child, step.chain, what)
+                index = _elements(child, step.index, what)
             except NoDataError:
                 return
             walk(child[index], pos + 1, key, labels)
@@ -795,7 +783,7 @@ def _extract_member(ids, path: SignalPath, plan: _Plan, key: Dict[int, int]):
     parent = _walk(ids, plan, 0, tp, key, fixed_times)
     fixed_time = fixed_times[-1] if fixed_times else None
     aos = getattr(parent, plan.steps[tp].name)
-    slices = list(_elements(aos, plan.steps[tp].chain, aos.metadata.path_string))
+    slices = list(_elements(aos, plan.steps[tp].index, aos.metadata.path_string))
     if not slices:
         raise NoDataError(f"'{aos.metadata.path_string}' has no time slices.")
     times = aos_times(aos)[slices]
