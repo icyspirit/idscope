@@ -30,6 +30,17 @@ def test_parse_source_list():
         parse_source("  ")
 
 
+def test_format_relative_to_a_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = tmp_path / "configs"
+    specs = parse_source_list(f"x={base / 'a.nc'}, b.nc, imas:hdf5?path=e")
+    # inside the directory: relative; outside: absolute, to read it back from there
+    assert format_source_list(specs, base) == f"x=a.nc, {tmp_path / 'b.nc'}, imas:hdf5?path=e"
+    assert parse_source_list(format_source_list(specs, base), base)[1].uri == str(
+        tmp_path / "b.nc"
+    )
+
+
 def test_hdf5_directory_becomes_uri(data_dir):
     spec = parse_source(str(data_dir / "h5"))
     assert spec.uri == f"imas:hdf5?path={(data_dir / 'h5').resolve()}"

@@ -7,6 +7,7 @@ sources are separated by commas, like the shot field of jScope.
 """
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,17 +36,29 @@ class SourceSpec:
     def format(self, base_dir: Optional[Path] = None) -> str:
         """Format for a source list, omitting the label when it is the default.
 
-        Files inside ``base_dir`` are written with a relative path.
+        With ``base_dir``, files are written relative to it when they are inside it
+        and with an absolute path otherwise, so that the text can be read back
+        relative to ``base_dir`` (see :func:`parse_source`).
         """
         uri = self.uri
         if base_dir is not None and not uri.startswith("imas:"):
-            try:
-                uri = str(Path(uri).resolve().relative_to(Path(base_dir).resolve()))
-            except ValueError:
-                pass
+            uri = _relative_or_absolute(Path(uri).expanduser(), Path(base_dir))
         if self.label == default_label(self.uri):
             return uri
         return f"{self.label}={uri}"
+
+
+def _relative_or_absolute(path: Path, base_dir: Path) -> str:
+    absolute = Path(os.path.abspath(path))
+    for inner, outer in (
+        (absolute, Path(os.path.abspath(base_dir))),
+        (absolute.resolve(), base_dir.resolve()),  # e.g. when one is through a symlink
+    ):
+        try:
+            return str(inner.relative_to(outer))
+        except ValueError:
+            pass
+    return str(absolute)
 
 
 def normalize_uri(text: str) -> str:
