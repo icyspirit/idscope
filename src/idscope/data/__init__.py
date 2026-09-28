@@ -11,7 +11,7 @@ from idscope.data.extract import (
     Trace,
     extract_signal,
 )
-from idscope.data.paths import ALL, SignalPath, parse_signal_path
+from idscope.data.paths import ALL, SignalPath, parse_alternatives, parse_signal_path
 from idscope.data.sources import (
     DataSource,
     SourcePool,
@@ -37,6 +37,7 @@ __all__ = [
     "Trace",
     "extract_signal",
     "format_source_list",
+    "parse_alternatives",
     "parse_signal_path",
     "parse_source",
     "parse_source_list",

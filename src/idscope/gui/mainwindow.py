@@ -26,9 +26,10 @@ from idscope.data.sources import (
 )
 from idscope.errors import IdscopeError
 from idscope.gui.browser import BrowserWidget
-from idscope.gui.panel import Panel
+from idscope.gui.panel import COLORBAR_SPACE, Panel
 from idscope.gui.setup_dialog import SetupDialog
 from idscope.gui.timebar import TimeBar
+from idscope.templates import load_template, template_names
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,12 @@ class MainWindow(QtWidgets.QMainWindow):
             action = file_menu.addAction(text)
             action.setShortcut(QtGui.QKeySequence(shortcut))
             action.triggered.connect(slot)
+            if slot == self.new_config:
+                templates_menu = file_menu.addMenu("New from &template")
+                for name in template_names():
+                    templates_menu.addAction(name).triggered.connect(
+                        lambda checked=False, n=name: self.new_from_template(n)
+                    )
 
         layout_menu = menu.addMenu("&Layout")
         layout_menu.addAction("Add panel below current").triggered.connect(
@@ -202,10 +209,14 @@ class MainWindow(QtWidgets.QMainWindow):
         view_menu.addAction(browser_action)
         view_menu.addAction(self.log_dock.toggleViewAction())
         view_menu.addSeparator()
-        self.link_action = view_menu.addAction("Link time axes")
-        self.link_action.setCheckable(True)
-        self.link_action.setChecked(self.config.link_time_axes)
-        self.link_action.toggled.connect(self._set_link_time_axes)
+        self.share_x_action = view_menu.addAction("Share x axes")
+        self.share_x_action.setToolTip(
+            "Time axes are shared across the window, profile coordinates within a "
+            "column; stacked panels then show x values only at the bottom"
+        )
+        self.share_x_action.setCheckable(True)
+        self.share_x_action.setChecked(self.config.share_x)
+        self.share_x_action.toggled.connect(self._set_share_x)
         view_menu.addAction("Autoscale all").triggered.connect(self.autoscale_all)
         view_menu.addSeparator()
         for text, shortcut, delta in (("Previous time slice", "Ctrl+Left", -1),
@@ -225,19 +236,25 @@ class MainWindow(QtWidgets.QMainWindow):
             self.columns_splitter.setParent(None)
             self.columns_splitter.deleteLater()
         self.panels = []
+        self.column_panels: List[List[Panel]] = []
         if not self.config.columns:
             self.config.columns = [ColumnConfig([PanelConfig()])]
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(4)
         for column in self.config.columns:
             if not column.panels:
                 column.panels.append(PanelConfig())
             column_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
             column_splitter.setChildrenCollapsible(False)
+            column_splitter.setHandleWidth(2)
+            panels = []
             for panel_config in column.panels:
                 panel = self._create_panel(panel_config)
                 column_splitter.addWidget(panel)
-                self.panels.append(panel)
+                panels.append(panel)
+            self.panels += panels
+            self.column_panels.append(panels)
             splitter.addWidget(column_splitter)
             # Qt distributes stretch factors, which keeps relative sizes on resize
             for i, panel_config in enumerate(column.panels):
@@ -350,7 +367,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for panel in self.panels:
                 errors += self._load_panel(panel, sources)
             self._update_time_grid()
-            self._link_time_axes()
+            self._arrange_axes()
         self._report(errors, _time.perf_counter() - start)
 
     def refresh_panel(self, panel: Panel) -> None:
@@ -358,7 +375,7 @@ class MainWindow(QtWidgets.QMainWindow):
         with _busy():
             errors = self._load_panel(panel, self.sources())
             self._update_time_grid()
-            self._link_time_axes()
+            self._arrange_axes()
         self._report(errors, _time.perf_counter() - start)
 
     def _load_panel(self, panel: Panel, sources: List[DataSource]) -> List[str]:
@@ -433,19 +450,33 @@ class MainWindow(QtWidgets.QMainWindow):
         for panel in self.panels:
             panel.autoscale()
 
-    def _set_link_time_axes(self, linked: bool) -> None:
-        self.config.link_time_axes = linked
-        self._link_time_axes()
+    def _set_share_x(self, shared: bool) -> None:
+        self.config.share_x = shared
+        self._arrange_axes()
 
-    def _link_time_axes(self) -> None:
-        """Link the x axis of all panels that have time on it."""
-        timed = [p for p in self.panels if p.kind in ("trace", "spacetime")]
-        master = timed[0].plot if timed else None
-        for panel in self.panels:
-            if panel in timed[1:] and self.config.link_time_axes:
-                panel.plot.setXLink(master)
-            else:
-                panel.plot.setXLink(None)
+    def _arrange_axes(self) -> None:
+        """Share x axes and stack panels tightly, as in jScope.
+
+        Panels that show the same x quantity share their x axis: time across the
+        window, a profile coordinate within a column. In a column, a panel whose
+        neighbour below shares its x axis does not repeat the x tick labels. Panels
+        without a color bar keep room for one when others in the column have it, so
+        that the plots line up.
+        """
+        share = self.config.share_x
+        masters = {}
+        for column, panels in enumerate(self.column_panels):
+            for panel in panels:
+                key = panel.x_key(column) if share else None
+                master = masters.setdefault(key, panel) if key else panel
+                panel.plot.setXLink(None if master is panel else master.plot)
+            keys = [panel.x_key(column) if share else None for panel in panels]
+            for i, panel in enumerate(panels):
+                below = keys[i + 1] if i + 1 < len(panels) else None
+                panel.set_x_tick_labels(keys[i] is None or keys[i] != below)
+            padding = COLORBAR_SPACE if any(p.has_colorbar() for p in panels) else 0
+            for panel in panels:
+                panel.set_right_padding(padding)
 
     # ---------------------------------------------------------------- dialogs
 
@@ -485,11 +516,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self._logged_notes.clear()
         self.time = config.time
         self.current_panel = None
-        self.link_action.setChecked(config.link_time_axes)
+        self.share_x_action.setChecked(config.share_x)
         self._show_sources()
         self.build_panels()
         self.refresh_all()
         self.browser.set_sources(self.sources())
+        self._update_title()
+
+    def new_from_template(self, name: str) -> None:
+        """Replace the layout by a template, keeping the sources."""
+        try:
+            config = load_template(name)
+        except IdscopeError as exc:
+            QtWidgets.QMessageBox.warning(self, "Cannot load template", str(exc))
+            return
+        config.sources = self.config.sources
+        config.dd_version = self.config.dd_version
+        self.config = config
+        self.config_path = None
+        self.time = None
+        self.current_panel = None
+        self.share_x_action.setChecked(config.share_x)
+        self._show_sources()
+        self.build_panels()
+        self.refresh_all()
         self._update_title()
 
     def new_config(self) -> None:

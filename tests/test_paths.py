@@ -1,7 +1,17 @@
 import pytest
 
-from idscope.data.paths import ALL, parse_signal_path
+from idscope.data.paths import ALL, parse_alternatives, parse_signal_path
 from idscope.errors import PathError
+
+
+def test_alternatives():
+    paths = parse_alternatives(
+        "equilibrium/time_slice/profiles_1d/j_phi | equilibrium/time_slice/profiles_1d/j_tor"
+    )
+    assert [p.parts[-1] for p in paths] == ["j_phi", "j_tor"]
+    assert len(parse_alternatives("core_profiles/time")) == 1
+    with pytest.raises(PathError, match="Empty alternative"):
+        parse_alternatives("core_profiles/time |")
 
 
 def test_simple_path():

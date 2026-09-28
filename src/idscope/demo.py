@@ -23,6 +23,14 @@ def _profile_scale(t: np.ndarray) -> np.ndarray:
     return 1.0e3 + 7.0e3 * ramp * (1.0 + sawtooth)
 
 
+def _set_first(node, names, value) -> None:
+    """Set the first of ``names`` that exists (quantities renamed between DD 3 and 4)."""
+    for name in names:
+        if hasattr(node, name):
+            setattr(node, name, value)
+            return
+
+
 def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME):
     """core_profiles with homogeneous time, electrons and two ion species.
 
@@ -37,6 +45,7 @@ def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME):
     cp.time = t
     rho = np.linspace(0.0, 1.0, N_RHO)
     te0 = scale * _profile_scale(t)
+    ramp = np.minimum(t / 2.0, 1.0)
     cp.profiles_1d.resize(n_time)
     for i, p1d in enumerate(cp.profiles_1d):
         p1d.time = t[i]
@@ -44,13 +53,26 @@ def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME):
         p1d.grid.psi = 20.0 * rho**2
         shape = (1.0 - rho**2) ** 1.5
         p1d.electrons.temperature = te0[i] * shape + 50.0
-        p1d.electrons.density = scale * 5.0e19 * (1.0 - 0.7 * rho**2) + 2.0e18
+        density = scale * 5.0e19 * (1.0 - 0.7 * rho**2) + 2.0e18
+        p1d.electrons.density = density
         n_ion = 2 if i < n_time - 3 else 1
         p1d.ion.resize(n_ion)
         for j, ion in enumerate(p1d.ion):
             ion.z_ion = 1.0 + j
             ion.temperature = (0.8 - 0.2 * j) * te0[i] * shape + 40.0
-    cp.global_quantities.ip = scale * 1.0e6 * np.minimum(t / 2.0, 1.0)
+        p1d.t_i_average = 0.8 * te0[i] * shape + 40.0
+        p1d.n_i_thermal_total = 0.9 * density
+        p1d.zeff = 1.6 + 0.4 * rho**2
+        p1d.q = 1.0 + (2.0 + ramp[i]) * rho**2
+        j_total = scale * 1.5e6 * ramp[i] * (1.0 - rho**2) ** 1.2
+        j_bootstrap = scale * 0.3e6 * ramp[i] * np.exp(-(((rho - 0.7) / 0.12) ** 2))
+        p1d.j_total = j_total + j_bootstrap
+        p1d.j_bootstrap = j_bootstrap
+        p1d.j_ohmic = j_total
+    cp.global_quantities.ip = scale * 1.0e6 * ramp
+    cp.global_quantities.v_loop = 1.2 * np.exp(-t / 1.5) + 0.2
+    cp.global_quantities.li_3 = 0.9 + 0.1 * np.cos(0.5 * t)
+    cp.global_quantities.beta_pol = scale * (0.3 + 0.4 * ramp)
     return cp
 
 
@@ -75,11 +97,23 @@ def equilibrium(factory, scale: float = 1.0, n_time: int = N_TIME):
         r0 = 1.8 + 0.03 * np.sin(t[i])
         kappa = 1.2 + 0.4 * ramp
         ts.time = t[i]
-        ts.global_quantities.ip = -scale * 1.0e6 * ramp
-        ts.global_quantities.li_3 = 0.9 + 0.1 * np.cos(0.5 * t[i])
+        gq = ts.global_quantities
+        gq.ip = -scale * 1.0e6 * ramp
+        gq.li_3 = 0.9 + 0.1 * np.cos(0.5 * t[i])
+        gq.beta_pol = scale * (0.3 + 0.4 * ramp)
+        _set_first(gq, ("beta_tor_norm", "beta_normal"), scale * 1.8 * ramp)
+        gq.q_axis = 1.0
+        gq.q_95 = 2.6 + 1.0 * ramp
+        gq.magnetic_axis.r = r0 + 0.02
+        gq.magnetic_axis.z = 0.01 * np.sin(2.0 * t[i])
+        ts.boundary.elongation = kappa
+        ts.boundary.triangularity = 0.25
         ts.profiles_1d.psi = rho**2
         ts.profiles_1d.rho_tor_norm = rho
         ts.profiles_1d.q = 1.0 + (2.0 + 1.0 * ramp) * rho**2
+        ts.profiles_1d.pressure = scale * 1.0e5 * ramp * (1.0 - rho**2) ** 2
+        _set_first(ts.profiles_1d, ("j_phi", "j_tor"),
+                   scale * 1.5e6 * ramp * (1.0 - rho**2) ** 1.2)
         ts.profiles_2d.resize(1)
         p2d = ts.profiles_2d[0]
         p2d.grid_type.index = 1
@@ -172,8 +206,12 @@ columns:
       - title: Poloidal flux
         kind: map
         equal_aspect: true
+        contours: 10
         signals:
           - equilibrium/time_slice/profiles_2d[0]/psi
+          - path: equilibrium/time_slice/boundary/outline/z
+            x: equilibrium/time_slice/boundary/outline/r
+            label: boundary
 """
 
 

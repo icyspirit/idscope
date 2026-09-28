@@ -5,11 +5,13 @@ viewer for [IMAS](https://imas.iter.org) IDS data. It reads data with
 [imas-python](https://github.com/iterorganization/IMAS-Python) and draws it with
 [pyqtgraph](https://www.pyqtgraph.org):
 
-- a grid of panels (columns × rows) with time traces, profiles and 2D maps,
+- a grid of panels (columns × rows) with time traces, profiles and 2D maps, stacked
+  tightly on shared x axes as in jScope,
 - a time cursor: profiles and maps follow the time picked on a trace or on the time bar,
 - several data sources overlaid in every panel, like shots in jScope,
 - an IDS browser that lists the quantities filled in a source,
-- configurations saved as YAML, which can be applied to other data.
+- configurations saved as YAML, which can be applied to other data,
+- templates for `core_profiles` and `equilibrium`.
 
 ![idscope showing two synthetic data sources](docs/idscope-demo.png)
 
@@ -40,6 +42,7 @@ idscope demo/demo.yaml
 Other ways to start:
 
 ```bash
+idscope -T equilibrium a.nc b.nc             # compare two sources with a template
 idscope shot.nc                              # browse a netCDF file
 idscope scope.yaml                           # open a configuration
 idscope scope.yaml -s A=a.nc -s "ref=imas:hdf5?path=/data/entry"
@@ -48,6 +51,23 @@ idscope scope.yaml -t 12.5 -e scope.png      # save an image at t = 12.5 s, no w
 idscope --list shot.nc                       # list the IDSs of a source
 idscope --list shot.nc core_profiles         # list the quantities of an IDS
 ```
+
+## Templates
+
+Templates are ready-made configurations for common IDSs. Start from one with
+`idscope -T NAME SOURCE ...` or File → New from template; `idscope --list-templates`
+prints their names.
+
+| template | shows |
+|---|---|
+| `core_profiles` | Ip, central Te/Ti/ne, loop voltage, li and beta over time; Te/Ti, ne/ni, q, current densities and Zeff profiles; Te and ne against (t, rho) |
+| `equilibrium` | Ip, q95/q_axis, li/beta, magnetic axis and shape over time; q, pressure and current density profiles against rho_tor_norm; psi(R, Z) with contours and the boundary |
+
+They work with Data Dictionary 3 and 4 data thanks to alternative paths (see below).
+Panels whose quantities are not filled in a source say so. A template saved with
+File → Save as becomes a configuration that can be edited.
+
+![equilibrium template on the ITER 134173/106 training data](docs/template-equilibrium.png)
 
 ## Using the scope
 
@@ -68,6 +88,9 @@ idscope --list shot.nc core_profiles         # list the quantities of an IDS
   the status bar shows the values of the current panel at that time.
 - The **time bar** at the bottom steps through the time slices of the profiles and
   maps (also Ctrl+Left / Ctrl+Right). The dashed line in time traces can be dragged.
+- Panels that show the same x quantity **share their x axis** (View → Share x axes):
+  time across the window, a profile coordinate within a column. Stacked panels that
+  share their x axis are drawn without gaps, and only the lowest shows the x values.
 - Right-click a panel for its menu: setup, autoscale, add/remove panels and columns,
   and pyqtgraph's *Export…* (PNG, SVG, CSV of the curves).
 - Signals that cannot be shown are reported in the panel (hover for details) and in
@@ -97,6 +120,11 @@ equilibrium:1/time_slice/global_quantities/ip        occurrence 1 of the IDS
   configuration, *X path* in the setup dialog), e.g. `core_profiles/profiles_1d/grid/psi`,
   or `equilibrium/time_slice/boundary/outline/r` to draw the boundary in (R, Z).
 - The plotted value is `value × scale + offset`.
+- Alternatives separated by `|` are tried in order, and the first that can be read is
+  shown. They help with quantities renamed between Data Dictionary versions
+  (`equilibrium/time_slice/profiles_1d/j_phi | equilibrium/time_slice/profiles_1d/j_tor`)
+  or filled in different IDSs
+  (`core_profiles/global_quantities/ip | equilibrium/time_slice/global_quantities/ip`).
 
 Data stored with another major Data Dictionary version than the one idscope uses
 (e.g. DD 3 data with DD 4) is shown in its own version, so paths use that version's
@@ -112,7 +140,10 @@ names; this is noted in the log. `--dd-version` selects the version to use.
 | `spacetime` | a profile as an image z(t, x) | 1D quantities that depend on time |
 
 `auto` (the default) picks the kind from the first signal. Maps and time-space images
-show one source at a time; choose it with the *Show* selector of the panel.
+show one source at a time; choose it with the *Show* selector of the panel. Profiles
+added to a map are drawn over it for every source, e.g. the plasma boundary
+(`boundary/outline/z` with `x: boundary/outline/r`) over psi(R, Z); `contours: N` adds
+N contour lines to the image.
 
 ## Configuration
 
@@ -137,14 +168,18 @@ columns:
       - title: Poloidal flux
         kind: map
         equal_aspect: true
+        contours: 12
         signals:
           - equilibrium/time_slice/profiles_2d[0]/psi
+          - path: equilibrium/time_slice/boundary/outline/z
+            x: equilibrium/time_slice/boundary/outline/r
+            label: boundary
 ```
 
 Panel options: `title`, `kind`, `signals`, `x_label`, `y_label`, `x_range`, `y_range`,
-`log_x`, `log_y`, `legend`, `equal_aspect`, `height`. Signal options: `path`, `label`,
-`scale`, `offset`, `x`, `color`, `sources`. Other top-level options: `link_time_axes`
-(zoom all time axes together, default true) and `dd_version`.
+`log_x`, `log_y`, `legend`, `equal_aspect`, `contours`, `height`. Signal options:
+`path`, `label`, `scale`, `offset`, `x`, `color`, `sources`. Other top-level options:
+`share_x` (share x axes and stack panels tightly, default true) and `dd_version`.
 
 ## Development
 
@@ -157,4 +192,5 @@ The tests create synthetic data (netCDF and HDF5) and use the ITER 134173/106 tr
 data bundled with imas-python.
 
 Code layout: `idscope.data` (sources, signal paths, extraction; no Qt),
-`idscope.config` (YAML configuration), `idscope.gui` (Qt widgets), `idscope.cli`.
+`idscope.config` (YAML configuration), `idscope.templates` (YAML templates),
+`idscope.gui` (Qt widgets), `idscope.cli`.

@@ -75,10 +75,11 @@ def test_round_trip(tmp_path):
                 ],
                 width=1.5,
             ),
-            ColumnConfig([PanelConfig(kind="spacetime", height=2.0)]),
+            ColumnConfig([PanelConfig(kind="spacetime", height=2.0),
+                          PanelConfig(kind="map", contours=12)]),
         ],
         time=2.5,
-        link_time_axes=False,
+        share_x=False,
     )
     path = tmp_path / "scope.yaml"
     save_config(config, path)
@@ -103,6 +104,8 @@ def test_default_values_are_omitted():
         ({"columns": [{"panels": [{"log_y": "yes"}]}]}, "log_y"),
         ({"idscope": 99}, "format version"),
         ({"time": True}, "time"),
+        ({"columns": [{"panels": [{"contours": -1}]}]}, "must not be negative"),
+        ({"columns": [{"panels": [{"contours": 2.5}]}]}, "contours"),
     ],
 )
 def test_invalid(data, message):

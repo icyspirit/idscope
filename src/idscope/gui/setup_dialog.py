@@ -6,7 +6,7 @@ from typing import List, Optional
 from pyqtgraph.Qt import QtCore, QtWidgets
 
 from idscope.config import KINDS, PanelConfig, SignalConfig
-from idscope.data import parse_signal_path
+from idscope.data import parse_alternatives
 from idscope.errors import IdscopeError
 
 COLUMNS = ["Path", "Label", "Scale", "Offset", "X path", "Color", "Sources"]
@@ -50,6 +50,10 @@ class SetupDialog(QtWidgets.QDialog):
         self.legend.setChecked(config.legend)
         self.equal_aspect = QtWidgets.QCheckBox("equal aspect")
         self.equal_aspect.setChecked(config.equal_aspect)
+        self.contours = QtWidgets.QSpinBox()
+        self.contours.setRange(0, 100)
+        self.contours.setValue(config.contours)
+        self.contours.setToolTip("Number of contour lines on maps and time-space images")
 
         form.addWidget(QtWidgets.QLabel("Title"), 0, 0)
         form.addWidget(self.title, 0, 1, 1, 3)
@@ -66,6 +70,9 @@ class SetupDialog(QtWidgets.QDialog):
         checks = QtWidgets.QHBoxLayout()
         for box in (self.log_x, self.log_y, self.legend, self.equal_aspect):
             checks.addWidget(box)
+        checks.addSpacing(12)
+        checks.addWidget(QtWidgets.QLabel("contours"))
+        checks.addWidget(self.contours)
         checks.addStretch(1)
         form.addLayout(checks, 3, 1, 1, 5)
         layout.addLayout(form)
@@ -81,7 +88,8 @@ class SetupDialog(QtWidgets.QDialog):
         if source_labels:
             sources_tip += f"\nAvailable: {', '.join(source_labels)}"
         tips = {
-            _PATH: "e.g. core_profiles/profiles_1d/electrons/temperature",
+            _PATH: "e.g. core_profiles/profiles_1d/electrons/temperature\n"
+                   "Alternatives, tried in order: path_a | path_b",
             _SCALE: "plotted value = value × scale + offset",
             _OFFSET: "plotted value = value × scale + offset",
             _X: "x values of a profile (default: its coordinate), "
@@ -216,10 +224,10 @@ class SetupDialog(QtWidgets.QDialog):
                 continue
             where = f"Row {row + 1}"
             try:
-                parse_signal_path(path)
+                parse_alternatives(path)
                 x = self._cell(row, _X) or None
                 if x:
-                    parse_signal_path(x)
+                    parse_alternatives(x)
             except IdscopeError as exc:
                 raise IdscopeError(f"{where}: {exc}") from None
             sources = self._cell(row, _SOURCES)
@@ -244,6 +252,7 @@ class SetupDialog(QtWidgets.QDialog):
             log_y=self.log_y.isChecked(),
             legend=self.legend.isChecked(),
             equal_aspect=self.equal_aspect.isChecked(),
+            contours=self.contours.value(),
             height=self.config.height,
         )
 

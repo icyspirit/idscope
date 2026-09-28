@@ -38,7 +38,8 @@ def window(qtbot, config_path):
 def test_demo_layout(window):
     assert [panel.kind for panel in window.panels] == KINDS
     assert all(not panel.errors for panel in window.panels)
-    assert [len(panel.curves) for panel in window.panels] == [2, 2, 2, 2, 2, 2, 2]
+    # the map panel has psi and the boundary drawn over it, for both sources
+    assert [len(panel.curves) for panel in window.panels] == [2, 2, 2, 2, 2, 2, 4]
     assert window.timebar.slider.maximum() == 40
     assert window.panels[6].image_selector.count() == 2
 
@@ -78,7 +79,7 @@ def test_apply_sources(window, data_dir):
     window.sources_edit.setText(f"only={data_dir / 'a.nc'}")
     window.apply_sources()
     assert [s.label for s in window.config.sources] == ["only"]
-    assert [len(panel.curves) for panel in window.panels] == [1] * 7
+    assert [len(panel.curves) for panel in window.panels] == [1] * 6 + [2]
     assert window.panels[6].header.isHidden()
 
 
@@ -113,9 +114,11 @@ def test_setup_dialog(window):
     dialog.title.setText("Flux")
     dialog.table.item(0, 2).setText("1000")
     dialog.table.item(0, 6).setText("A")
+    dialog.contours.setValue(3)
     assert dialog.apply()
     window.refresh_panel(panel)
     assert panel.config.title == "Flux"
+    assert panel.config.contours == 3
     assert panel.config.signals[0].scale == 1000.0
     assert panel.config.signals[0].sources == ["A"]
     assert len(panel.curves) == 1
@@ -199,3 +202,58 @@ def test_export_image(window, tmp_path):
     path = tmp_path / "scope.png"
     window.export_image(path)
     assert path.stat().st_size > 10000
+
+
+def plot_edges(panel):
+    """Left and right edges of the plot area, in window coordinates."""
+    rect = panel.plot.getViewBox().sceneBoundingRect()
+    view = panel.graphics
+    to_window = panel.window().mapFromGlobal
+    left = to_window(view.mapToGlobal(view.mapFromScene(rect.topLeft()))).x()
+    right = to_window(view.mapToGlobal(view.mapFromScene(rect.topRight()))).x()
+    return left, right
+
+
+def test_shared_x_axes(window):
+    traces, (te, q, st), (psi,) = window.column_panels
+    master = traces[0].plot.getViewBox()
+    for panel in traces[1:] + [st]:
+        assert panel.plot.getViewBox().linkedView(0) is master
+    assert te.plot.getViewBox().linkedView(0) is None  # rho, not time
+    assert q.plot.getViewBox().linkedView(0) is None  # psi, not rho
+    shown = [p.plot.getAxis("bottom").style["showValues"] for p in window.panels]
+    # stacked time traces only label the lowest one; te (rho) and q (psi) differ
+    assert shown == [False, False, True, True, True, True, True]
+
+    window.share_x_action.setChecked(False)
+    assert all(p.plot.getViewBox().linkedView(0) is None for p in window.panels)
+    assert all(p.plot.getAxis("bottom").style["showValues"] for p in window.panels)
+
+
+def test_stacked_plots_line_up(window, qtbot):
+    qtbot.wait(50)
+    for panels in window.column_panels:
+        # one of the panels of the second column has a color bar
+        assert len({plot_edges(panel) for panel in panels}) == 1
+
+
+def test_map_overlay_and_contours(window):
+    psi = window.panels[6]
+    boundary = [c for c in psi.curves if c.item is not None]
+    assert [c.name for c in boundary] == ["boundary [A]", "boundary [B]"]
+    assert psi._contours is not None
+    x_before = boundary[0].item.xData.copy()
+    window.set_time(1.0)
+    assert not np.allclose(x_before, boundary[0].item.xData)
+    assert psi.title_item.textItem.toPlainText() == "Poloidal flux  t = 1 s"
+
+
+def test_slice_time_in_title_or_legend(window):
+    te = window.panels[3]
+    window.set_time(3.1)
+    assert te.title_item.textItem.toPlainText() == "Electron temperature  t = 3 s"
+    assert all("@" not in label.text for _, label in te.legend.items)
+    # a fixed time slice next to the time-dependent profile: the times differ
+    te.add_signal("core_profiles/profiles_1d[4]/electrons/temperature")
+    assert te.title_item.textItem.toPlainText() == "Electron temperature"
+    assert all("@" in label.text for _, label in te.legend.items)

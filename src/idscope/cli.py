@@ -10,12 +10,14 @@ from typing import List, Optional, Tuple
 from idscope import __version__
 from idscope.config import ScopeConfig, default_config, load_config
 from idscope.errors import IdscopeError
+from idscope.templates import load_template, template_names
 
 EPILOG = """\
 examples:
   idscope shot.nc                        browse a netCDF file
   idscope scope.yaml                     open a saved configuration
   idscope scope.yaml -s A=a.nc -s B=b.nc apply a configuration to other data
+  idscope -T equilibrium a.nc b.nc       compare two sources with a template
   idscope scope.yaml -e scope.png -t 5   save an image at t = 5 s, without window
   idscope --list shot.nc                 list the IDSs of a source
   idscope --list shot.nc core_profiles   list the quantities of an IDS
@@ -39,6 +41,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-s", "--source", action="append", default=[], metavar="SOURCE",
         help="data source; replaces the sources of the configuration (repeatable)",
+    )
+    parser.add_argument(
+        "-T", "--template", metavar="NAME",
+        help="start from a template (see --list-templates) instead of a configuration",
+    )
+    parser.add_argument(
+        "--list-templates", action="store_true", help="print the template names and exit"
     )
     parser.add_argument("-t", "--time", type=float, help="initial time [s]")
     parser.add_argument(
@@ -68,10 +77,15 @@ def assemble_config(args) -> Tuple[ScopeConfig, Optional[Path]]:
 
     configs = [i for i in args.inputs if i.lower().endswith((".yaml", ".yml"))]
     sources = [i for i in args.inputs if i not in configs] + args.source
-    if len(configs) > 1:
-        raise IdscopeError("Only one configuration file can be opened.")
+    if len(configs) + bool(args.template) > 1:
+        raise IdscopeError("Give one configuration file or one template.")
     config_path = Path(configs[0]) if configs else None
-    config = load_config(config_path) if config_path else default_config()
+    if config_path:
+        config = load_config(config_path)
+    elif args.template:
+        config = load_template(args.template)
+    else:
+        config = default_config()
     if sources:
         config.sources = unique_labels([parse_source(s) for s in sources])
     if args.dd_version:
@@ -139,6 +153,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
     try:
+        if args.list_templates:
+            for name in template_names():
+                print(name)
+            return 0
         if args.list:
             return list_command(args)
         config, config_path = assemble_config(args)

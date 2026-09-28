@@ -1,0 +1,100 @@
+# idscope template: overview of the core_profiles IDS.
+#
+#   idscope -T core_profiles SOURCE [SOURCE ...]
+#
+# Paths separated by "|" are alternatives, tried in order: they cover quantities
+# that are named differently in Data Dictionary 3 and 4, or filled differently by
+# different codes.
+title: core_profiles
+columns:
+  # Time traces
+  - panels:
+      - title: Plasma current
+        signals:
+          - path: core_profiles/global_quantities/ip | equilibrium/time_slice/global_quantities/ip
+            label: Ip
+            scale: 1.0e-6
+        y_label: Ip [MA]
+      - title: Central temperatures
+        signals:
+          - path: core_profiles/profiles_1d/electrons/temperature[0]
+            label: Te(0)
+            scale: 1.0e-3
+          - path: core_profiles/profiles_1d/t_i_average[0] | core_profiles/profiles_1d/ion[0]/temperature[0]
+            label: Ti(0)
+            scale: 1.0e-3
+        y_label: T(0) [keV]
+      - title: Central electron density
+        signals:
+          - path: core_profiles/profiles_1d/electrons/density[0]
+            label: ne(0)
+            scale: 1.0e-19
+        y_label: ne(0) [1e19 m^-3]
+      - title: Loop voltage
+        signals:
+          - path: core_profiles/global_quantities/v_loop
+            label: V_loop
+        y_label: V_loop [V]
+      - title: Internal inductance, poloidal beta
+        signals:
+          - path: core_profiles/global_quantities/li_3
+            label: li_3
+          - path: core_profiles/global_quantities/beta_pol
+            label: beta_pol
+        y_label: li_3, beta_pol
+  # Profiles at the selected time
+  - panels:
+      - title: Temperatures
+        signals:
+          - path: core_profiles/profiles_1d/electrons/temperature
+            label: Te
+            scale: 1.0e-3
+          - path: core_profiles/profiles_1d/t_i_average | core_profiles/profiles_1d/ion[0]/temperature
+            label: Ti
+            scale: 1.0e-3
+        y_label: T [keV]
+      - title: Densities
+        signals:
+          - path: core_profiles/profiles_1d/electrons/density
+            label: ne
+            scale: 1.0e-19
+          - path: core_profiles/profiles_1d/n_i_thermal_total | core_profiles/profiles_1d/ion[0]/density
+            label: ni
+            scale: 1.0e-19
+        y_label: n [1e19 m^-3]
+      - title: Safety factor
+        signals:
+          - path: core_profiles/profiles_1d/q
+            label: q
+        y_label: q
+      - title: Current densities
+        signals:
+          - path: core_profiles/profiles_1d/j_total
+            label: j_total
+            scale: 1.0e-6
+          - path: core_profiles/profiles_1d/j_ohmic
+            label: j_ohmic
+            scale: 1.0e-6
+          - path: core_profiles/profiles_1d/j_bootstrap
+            label: j_bootstrap
+            scale: 1.0e-6
+        y_label: j [MA m^-2]
+      - title: Effective charge
+        signals:
+          - path: core_profiles/profiles_1d/zeff
+            label: Zeff
+        y_label: Zeff
+  # Profiles over time
+  - panels:
+      - title: Te [keV]
+        kind: spacetime
+        signals:
+          - path: core_profiles/profiles_1d/electrons/temperature
+            label: Te
+            scale: 1.0e-3
+      - title: ne [1e19 m^-3]
+        kind: spacetime
+        signals:
+          - path: core_profiles/profiles_1d/electrons/density
+            label: ne
+            scale: 1.0e-19

@@ -3,13 +3,14 @@
 import logging
 from typing import List, NamedTuple, Optional, Tuple
 
+import contourpy
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from idscope.config import PanelConfig, SignalConfig
 from idscope.data import MAP, PROFILE, TRACE, MapSeries, ProfileSeries, SignalData
-from idscope.data import parse_signal_path
+from idscope.data import parse_alternatives
 from idscope.data.sources import DataSource
 from idscope.errors import IdscopeError
 from idscope.gui import style
@@ -19,8 +20,19 @@ logger = logging.getLogger(__name__)
 MIME_SIGNAL = "application/x-idscope-signal"
 """Mime type of signal paths dragged from the IDS browser (one path per line)."""
 
+LEFT_AXIS_WIDTH = 52
+"""Width of the y tick labels (the axis label comes on top). The same for all panels
+so that the plots of a column line up."""
+COLORBAR_WIDTH = 64
+"""Fixed width of color bars."""
+COLORBAR_GAP = 4
+"""Gap between a plot and its color bar."""
+COLORBAR_SPACE = COLORBAR_WIDTH + COLORBAR_GAP
+"""Room taken by a color bar; panels without one reserve it to stay aligned."""
+
 _DATA_KIND_TO_PANEL = {TRACE: "trace", PROFILE: "profile", MAP: "map"}
 _HINT = "Double-click to set up, or drop a signal from the IDS browser"
+_FONT_SIZE = 8  # points
 
 
 class Curve(NamedTuple):
@@ -51,6 +63,26 @@ def _edges(x: np.ndarray) -> np.ndarray:
         return np.array([x[0] - 0.5, x[0] + 0.5])
     mid = 0.5 * (x[1:] + x[:-1])
     return np.concatenate([[x[0] - (mid[0] - x[0])], mid, [x[-1] + (x[-1] - mid[-1])]])
+
+
+def contour_lines(x1: np.ndarray, x2: np.ndarray, z: np.ndarray, count: int):
+    """``count`` evenly spaced contour lines of z(x1, x2), as x and y arrays with
+    NaN between lines (for one PlotDataItem), or None."""
+    finite = z[np.isfinite(z)]
+    if count <= 0 or finite.size == 0 or finite.min() == finite.max():
+        return None
+    levels = np.linspace(finite.min(), finite.max(), count + 2)[1:-1]
+    generator = contourpy.contour_generator(
+        x1, x2, np.ma.masked_invalid(z.T), line_type="Separate"
+    )
+    xs, ys = [], []
+    for level in levels:
+        for line in generator.lines(level):
+            xs += [line[:, 0], [np.nan]]
+            ys += [line[:, 1], [np.nan]]
+    if not xs:
+        return None
+    return np.concatenate(xs), np.concatenate(ys)
 
 
 def _format(value: float) -> str:
@@ -87,14 +119,17 @@ class Panel(QtWidgets.QFrame):
         self._image_curves: List[Curve] = []
         self._image = None
         self._colorbar = None
+        self._contours = None
         self._image_grid: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
+        self._image_time: Optional[float] = None
+        self._title_time: Optional[float] = None
         self._time_line = None
 
         self.setFrameShape(QtWidgets.QFrame.Shape.Box)
         self.set_current(False)
         self.setAcceptDrops(True)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(1, 1, 1, 1)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         # Source selector for maps and time-space images (one image at a time)
@@ -102,8 +137,11 @@ class Panel(QtWidgets.QFrame):
         header_layout = QtWidgets.QHBoxLayout(self.header)
         header_layout.setContentsMargins(4, 0, 4, 0)
         header_layout.addStretch(1)
-        header_layout.addWidget(QtWidgets.QLabel("Show:"))
+        show_label = QtWidgets.QLabel("Show:")
+        show_label.setStyleSheet(f"font-size: {_FONT_SIZE}pt;")
+        header_layout.addWidget(show_label)
         self.image_selector = QtWidgets.QComboBox()
+        self.image_selector.setStyleSheet(f"font-size: {_FONT_SIZE}pt;")
         self.image_selector.setSizeAdjustPolicy(
             QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents
         )
@@ -119,24 +157,58 @@ class Panel(QtWidgets.QFrame):
         layout.addWidget(self.message)
 
         self.graphics = pg.GraphicsLayoutWidget()
-        self.graphics.setMinimumSize(120, 80)
+        self.graphics.setMinimumSize(120, 60)
+        self.graphics.ci.setContentsMargins(0, 0, 0, 0)
+        self.graphics.ci.setSpacing(0)
         # Let drops reach the panel instead of the graphics view
         self.graphics.setAcceptDrops(False)
         self.graphics.viewport().setAcceptDrops(False)
         layout.addWidget(self.graphics, stretch=1)
         self.plot = self.graphics.addPlot(row=0, col=0)
-        self.plot.showGrid(x=True, y=True, alpha=0.25)
-        for axis in ("left", "bottom"):
-            # Show plain values (pyqtgraph would otherwise rescale, e.g. "(x0.001)")
-            self.plot.getAxis(axis).enableAutoSIPrefix(False)
+        self._style_plot()
         self.legend = self.plot.addLegend(
-            offset=(-5, 5), labelTextSize="8pt", brush=pg.mkBrush(255, 255, 255, 200)
+            offset=(-5, 3), labelTextSize=f"{_FONT_SIZE}pt",
+            brush=pg.mkBrush(255, 255, 255, 200), verSpacing=-6,
         )
+        # The title is drawn inside the plot, like in jScope, to keep panels compact
+        self.title_item = pg.TextItem(color="k", anchor=(0, 0),
+                                      fill=pg.mkBrush(255, 255, 255, 150))
+        title_font = QtGui.QFont()
+        title_font.setPointSize(_FONT_SIZE + 1)
+        title_font.setBold(True)
+        self.title_item.setFont(title_font)
+        self.title_item.setParentItem(self.plot.getViewBox())
+        self.title_item.setPos(2, 1)
+        self.title_item.setZValue(100)
         self._install_menu()
         scene = self.graphics.scene()
         scene.sigMouseClicked.connect(self._on_click)
         scene.sigMouseMoved.connect(self._on_move)
         self.apply_config()
+
+    def _style_plot(self) -> None:
+        plot = self.plot
+        plot.layout.setContentsMargins(0, 2, 2, 0)
+        plot.layout.setHorizontalSpacing(0)
+        plot.layout.setVerticalSpacing(0)
+        plot.showGrid(x=True, y=True, alpha=0.25)
+        font = QtGui.QFont()
+        font.setPointSize(_FONT_SIZE)
+        for name in ("left", "bottom", "right"):
+            axis = plot.getAxis(name)
+            # Ticks point into the plot, as in jScope; values are shown as they are
+            # (pyqtgraph would otherwise rescale them, e.g. "(x0.001)")
+            axis.setStyle(tickFont=font, tickLength=-4, tickTextOffset=2)
+            axis.enableAutoSIPrefix(False)
+        plot.getAxis("left").setWidth(LEFT_AXIS_WIDTH)
+        plot.getViewBox().suggestPadding = self._suggest_padding
+
+    def _suggest_padding(self, axis: int) -> float:
+        """Auto-range padding: little along x (the edge tick labels must fit), room
+        for the title on y."""
+        if self.kind == "map":
+            return 0.02
+        return 0.01 if axis == 0 else 0.1
 
     # ------------------------------------------------------------------ config
 
@@ -148,16 +220,16 @@ class Panel(QtWidgets.QFrame):
         )
 
     def set_current(self, current: bool) -> None:
-        color = style.CURRENT_PANEL_COLOR if current else "#d0d0d0"
+        color = style.CURRENT_PANEL_COLOR if current else "#c8c8c8"
         self.setStyleSheet(f"Panel {{ border: 1px solid {color}; }}")
 
     def apply_config(self) -> None:
         """Apply the settings that do not require reloading data."""
         cfg = self.config
-        self.plot.setTitle(cfg.title or None, size="9pt")
         self.plot.setLogMode(x=cfg.log_x, y=cfg.log_y)
         self.legend.setVisible(cfg.legend and bool(self.legend.items))
         self.plot.getViewBox().setAspectLocked(cfg.equal_aspect)
+        self._update_title()
         self._update_labels()
         self.apply_ranges()
 
@@ -180,6 +252,38 @@ class Panel(QtWidgets.QFrame):
         self.config.signals.append(SignalConfig(path))
         self.signalsChanged.emit(self)
 
+    # ------------------------------------------------------ layout (main window)
+
+    def x_key(self, column: int) -> Optional[str]:
+        """Identifies the x quantity, for sharing x axes between panels.
+
+        Time is shared across the window; a profile coordinate only within a column.
+        """
+        if self.kind in ("trace", "spacetime"):
+            return "time"
+        if self.kind == "profile" and self.curves:
+            return f"{column}:{self.curves[0].data.x_axis.title()}"
+        return None
+
+    def set_x_tick_labels(self, visible: bool) -> None:
+        """Show or hide the x tick labels and label (hidden in stacked panels)."""
+        axis = self.plot.getAxis("bottom")
+        axis.setStyle(showValues=visible)
+        axis.showLabel(visible)
+
+    def has_colorbar(self) -> bool:
+        return self._colorbar is not None
+
+    def set_right_padding(self, width: int) -> None:
+        """Reserve ``width`` pixels on the right, to line up with color bars."""
+        if width > 0 and self._colorbar is None:
+            self.plot.showAxis("right")
+            axis = self.plot.getAxis("right")
+            axis.setStyle(showValues=False)
+            axis.setWidth(width)
+        else:
+            self.plot.hideAxis("right")
+
     # ----------------------------------------------------------------- loading
 
     def clear(self) -> None:
@@ -196,6 +300,7 @@ class Panel(QtWidgets.QFrame):
         self.kind = None
         self.errors = []
         self._image_curves = []
+        self._image_time = self._title_time = None
         with QtCore.QSignalBlocker(self.image_selector):
             self.image_selector.clear()
         self.header.hide()
@@ -212,8 +317,8 @@ class Panel(QtWidgets.QFrame):
         loaded = []
         for signal_index, signal in enumerate(self.config.signals):
             try:
-                path = parse_signal_path(signal.path)
-                x_path = parse_signal_path(signal.x) if signal.x else None
+                paths = parse_alternatives(signal.path)
+                x_paths = parse_alternatives(signal.x) if signal.x else [None]
             except IdscopeError as exc:
                 errors.append(str(exc))
                 continue
@@ -221,7 +326,7 @@ class Panel(QtWidgets.QFrame):
                 if signal.sources is not None and source.label not in signal.sources:
                     continue
                 try:
-                    data = source.signal(path, x_path)
+                    data = source.first_signal(paths, x_paths)
                 except IdscopeError as exc:
                     errors.append(f"{source.label}: {exc}")
                     continue
@@ -262,6 +367,7 @@ class Panel(QtWidgets.QFrame):
             )
             self.plot.addItem(self._time_line, ignoreBounds=True)
         self.errors = errors
+        self.legend.setColumnCount(2 if len(self.legend.items) > 4 else 1)
         # An empty legend would still draw its (white) box
         self.legend.setVisible(self.config.legend and bool(self.legend.items))
         self._show_message()
@@ -284,6 +390,8 @@ class Panel(QtWidgets.QFrame):
                 return (f"'{data.path.text}' is not a time-dependent profile and cannot "
                         "be shown as a time-space image.")
             return None
+        if kind == "map" and isinstance(data, ProfileSeries):
+            return None  # a curve drawn over the map, e.g. the plasma boundary
         if _DATA_KIND_TO_PANEL[data.kind] != kind:
             return (f"'{data.path.text}' is a {data.kind} and cannot be shown in a "
                     f"{kind} panel.")
@@ -307,8 +415,11 @@ class Panel(QtWidgets.QFrame):
             item.setDownsampling(auto=True, method="peak")
             item.setClipToView(True)
             return item
-        if self.kind == "profile":
+        if isinstance(data, ProfileSeries) and self.kind in ("profile", "map"):
+            if self.kind == "map":
+                pen.setWidthF(2.0)  # stand out on the image
             item = pg.PlotDataItem(pen=pen, name=name)
+            item.setZValue(20)
             self.plot.addItem(item)
             return item
         return None  # images are created in _setup_images
@@ -317,7 +428,10 @@ class Panel(QtWidgets.QFrame):
 
     def _setup_images(self, shown: str = "") -> None:
         """Fill the image selector, keeping the image ``shown`` before a reload."""
-        self._image_curves = list(self.curves)
+        self._image_curves = [
+            curve for curve in self.curves
+            if self.kind == "spacetime" or isinstance(curve.data, MapSeries)
+        ]
         with QtCore.QSignalBlocker(self.image_selector):
             for curve in self._image_curves:
                 self.image_selector.addItem(curve.name)
@@ -342,14 +456,12 @@ class Panel(QtWidgets.QFrame):
     def _draw_map(self) -> None:
         curve = self._selected_image()
         if curve is None:
+            self._image_time = None
             return
         data: MapSeries = curve.data
         x1, x2, z, t = data.at(self._time)
         self._set_image(x1, x2, curve.scaled(z))
-        title = self.config.title or curve.name
-        if t is not None:
-            title += f"  (t = {t:.4g} s)"
-        self.plot.setTitle(title, size="9pt")
+        self._image_time = t
 
     def _draw_spacetime(self) -> None:
         curve = self._selected_image()
@@ -399,18 +511,41 @@ class Panel(QtWidgets.QFrame):
                 self._image.setData(ex, ey, z_filled)
         if self._colorbar is None:
             self._colorbar = pg.ColorBarItem(
-                colorMap=pg.colormap.get(style.COLORMAP), interactive=True, width=12,
+                colorMap=pg.colormap.get(style.COLORMAP), interactive=True, width=10,
             )
             self._colorbar.setImageItem(self._image, insert_in=self.plot)
+            self._colorbar.setFixedWidth(COLORBAR_WIDTH)
+            # The color bar goes in column 5 of the plot layout, after a gap column
+            self.plot.layout.setColumnFixedWidth(4, COLORBAR_GAP)
+            self._colorbar.getAxis("right").setStyle(
+                tickFont=self.plot.getAxis("left").style["tickFont"]
+            )
         self._colorbar.setLevels(levels)
         self._image_grid = (x1, x2, z)
+        self._draw_contours(x1, x2, z)
+
+    def _draw_contours(self, x1, x2, z) -> None:
+        if self._contours is not None:
+            self.plot.removeItem(self._contours)
+            self._contours = None
+        lines = contour_lines(x1, x2, z, self.config.contours)
+        if lines is not None:
+            self._contours = pg.PlotDataItem(
+                *lines, pen=pg.mkPen(255, 255, 255, 170, width=1), connect="finite"
+            )
+            self._contours.setZValue(5)
+            self.plot.addItem(self._contours)
 
     def _remove_image(self) -> None:
+        if self._contours is not None:
+            self.plot.removeItem(self._contours)
+            self._contours = None
         if self._image is not None:
             self.plot.removeItem(self._image)
             self._image = None
         if self._colorbar is not None:
             self.plot.layout.removeItem(self._colorbar)
+            self.plot.layout.setColumnFixedWidth(4, 0)
             scene = self._colorbar.scene()
             if scene is not None:
                 scene.removeItem(self._colorbar)
@@ -426,13 +561,24 @@ class Panel(QtWidgets.QFrame):
             self._time_line.setVisible(t is not None)
             if t is not None:
                 self._time_line.setValue(t)
-        if self.kind == "profile":
-            for curve in self.curves:
+        shown = []
+        for curve in self.curves:
+            if isinstance(curve.data, ProfileSeries) and curve.item is not None:
                 x, y, t_slice = curve.data.at(t)
                 curve.item.setData(x, curve.scaled(y))
-                self._set_legend_text(curve, t_slice)
-        elif self.kind == "map":
+                shown.append((curve, t_slice))
+        if self.kind == "map":
             self._draw_map()
+        # The time of the slices is shown once in the title when it is the same for
+        # all curves (and the map), otherwise in the legend of every curve
+        times = [t_slice for _, t_slice in shown if t_slice is not None]
+        if self.kind == "map" and self._image_time is not None:
+            times.insert(0, self._image_time)
+        common = bool(times) and bool(np.allclose(times, times[0], rtol=1e-9, atol=0))
+        self._title_time = times[0] if times and (common or self.kind == "map") else None
+        for curve, t_slice in shown:
+            self._set_legend_text(curve, None if common else t_slice)
+        self._update_title()
 
     def _set_legend_text(self, curve: Curve, t_slice: Optional[float]) -> None:
         text = curve.name if t_slice is None else f"{curve.name}  @ {t_slice:.4g} s"
@@ -468,10 +614,18 @@ class Panel(QtWidgets.QFrame):
                 if index is None:
                     continue
                 value = float(data.values[index])
-            result.append(f"{curve.name} = {_format(curve.signal.scale * value + curve.signal.offset)}")
+            result.append(f"{curve.name} = {_format(curve.scaled(value))}")
         return result
 
     # ------------------------------------------------------------------ labels
+
+    def _update_title(self) -> None:
+        parts = [self.config.title] if self.config.title else []
+        if self.kind in ("profile", "map") and self._title_time is not None:
+            parts.append(f"t = {self._title_time:.4g} s")
+        text = "  ".join(parts)
+        self.title_item.setText(text)
+        self.title_item.setVisible(bool(text))
 
     def _update_labels(self) -> None:
         cfg = self.config
@@ -499,11 +653,18 @@ class Panel(QtWidgets.QFrame):
                         else (f"[{only}]" if only else "")
                     )
             if self._colorbar is not None and shown is not None:
-                self._colorbar.setLabel("left", shown.data.value_axis.title())
-        self.plot.setLabel("bottom", cfg.x_label if cfg.x_label is not None else x_title)
-        self.plot.setLabel("left", cfg.y_label if cfg.y_label is not None else y_title)
-        if self.kind != "map":
-            self.plot.setTitle(cfg.title or None, size="9pt")
+                scaled = shown.signal.scale != 1.0 or shown.signal.offset != 0.0
+                # Scaled values no longer have the units of the Data Dictionary
+                label = shown.name if scaled else shown.data.value_axis.title()
+                self._colorbar.setLabel("left", label, **{"font-size": f"{_FONT_SIZE}pt"})
+        style_args = {"font-size": f"{_FONT_SIZE}pt"}
+        x_text = cfg.x_label if cfg.x_label is not None else x_title
+        y_text = cfg.y_label if cfg.y_label is not None else y_title
+        self.plot.setLabel("bottom", x_text, **style_args)
+        # Always show a y label (a space when empty): its width is added to the
+        # fixed axis width, and must be the same in all panels to line them up
+        self.plot.setLabel("left", y_text or " ", **style_args)
+        self._update_title()
 
     def _show_message(self) -> None:
         if not self.config.signals:
@@ -520,7 +681,7 @@ class Panel(QtWidgets.QFrame):
             return
         self.message.setText(text)
         self.message.setToolTip(tip)
-        self.message.setStyleSheet(f"color: {color}; font-size: 8pt;")
+        self.message.setStyleSheet(f"color: {color}; font-size: {_FONT_SIZE}pt;")
         self.message.show()
 
     # ------------------------------------------------------------------- mouse
