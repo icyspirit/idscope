@@ -24,20 +24,27 @@ def create_application(argv=None):
 
 
 def create_window(config: Optional[ScopeConfig] = None, config_path=None,
-                  time: Optional[float] = None):
-    """Create a main window (the QApplication must exist)."""
+                  time: Optional[float] = None, modified: bool = False,
+                  persist: bool = False):
+    """Create a main window (the QApplication must exist).
+
+    Args:
+        modified: the panels have changes that are not saved to ``config_path``.
+        persist: restore the window's settings, and keep them and the scope as the
+            last session (see :mod:`idscope.session`).
+    """
     from idscope.gui.mainwindow import MainWindow
 
-    window = MainWindow(config, config_path)
+    window = MainWindow(config, config_path, modified=modified, persist=persist)
     if time is not None:
         window.set_time(time)
     return window
 
 
 def run(config: Optional[ScopeConfig] = None, config_path=None,
-        time: Optional[float] = None) -> int:
-    """Open a scope window and run the Qt event loop."""
+        time: Optional[float] = None, modified: bool = False) -> int:
+    """Open a scope window, which keeps the session, and run the Qt event loop."""
     app = create_application()
-    window = create_window(config, config_path, time)
+    window = create_window(config, config_path, time, modified=modified, persist=True)
     window.show()
     return app.exec()

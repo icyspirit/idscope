@@ -50,3 +50,59 @@ def test_export(tmp_path, data_dir, capsys):
     assert main(args) == 0
     assert image.stat().st_size > 10000
     assert "wrote" in capsys.readouterr().out
+
+
+def test_last_session(tmp_path, data_dir):
+    from idscope.cli import assemble_config, build_parser
+    from idscope.config import default_config, load_config
+    from idscope.session import save_session
+
+    parse = build_parser().parse_args
+    assert assemble_config(parse([])) == (default_config(), None, False)  # no session yet
+
+    scope = tmp_path / "demo.yaml"
+    scope.write_text(DEMO_CONFIG)
+    last = load_config(scope)
+    last.time = 4.0
+    save_session(last, scope, modified=True)
+    assert assemble_config(parse([])) == (last, scope, True)
+
+    # sources only: the panels of the last session, with other data
+    config, path, modified = assemble_config(parse([str(data_dir / "a.nc"), "-t", "2"]))
+    assert config.columns == last.columns
+    assert [s.label for s in config.sources] == ["a"]
+    assert config.time == 2.0
+    assert (path, modified) == (scope, True)
+
+    # a configuration file, a template or --new: not the last session
+    assert assemble_config(parse([str(scope)]))[1:] == (scope, False)
+    assert assemble_config(parse(["-T", "equilibrium"]))[1:] == (None, False)
+    config, path, modified = assemble_config(parse(["--new", str(data_dir / "a.nc")]))
+    assert config.columns == default_config().columns
+    assert (path, modified) == (None, False)
+
+
+def test_unreadable_session(capsys):
+    from idscope.cli import assemble_config, build_parser
+    from idscope.config import default_config
+    from idscope.session import session_path
+
+    session_path().parent.mkdir(parents=True)
+    session_path().write_text("columns: [\n")
+    assert assemble_config(build_parser().parse_args([])) == (default_config(), None, False)
+    assert "Cannot read the last session" in capsys.readouterr().err
+
+
+def test_export_with_the_last_session(tmp_path, data_dir):
+    pytest.importorskip("pyqtgraph.Qt")
+    from idscope.config import load_config
+    from idscope.session import save_session, session_path
+
+    scope = tmp_path / "demo.yaml"
+    scope.write_text(DEMO_CONFIG)
+    save_session(load_config(scope), scope)
+    before = session_path().read_text()
+    image = tmp_path / "last.png"
+    assert main([str(data_dir / "a.nc"), "-e", str(image), "--size", "900x600"]) == 0
+    assert image.stat().st_size > 10000
+    assert session_path().read_text() == before  # an export leaves the session alone

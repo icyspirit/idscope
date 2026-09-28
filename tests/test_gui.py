@@ -4,7 +4,7 @@ import pytest
 pytest.importorskip("pyqtgraph.Qt")
 
 import pyqtgraph as pg  # noqa: E402
-from pyqtgraph.Qt import QtCore, QtGui  # noqa: E402
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets  # noqa: E402
 
 from idscope.config import SignalConfig, load_config  # noqa: E402
 from idscope.data import parse_signal_path  # noqa: E402
@@ -317,3 +317,159 @@ def test_wildcards_in_panels(window):
     sample = source.signal(parse_signal_path("pf_active/coil[:]/current/data[5]"))
     np.testing.assert_allclose(panel._bars[0].item.opts["height"],
                                [1e-3 * float(m.values) for m in sample.members])
+
+
+def test_modified_mark(window, config_path, data_dir, tmp_path, monkeypatch):
+    from idscope.gui.setup_dialog import SetupDialog
+    from idscope.session import session_path
+
+    assert window.windowTitle() == "idscope — idscope demo[*]"  # Qt shows [*] as *
+    assert not window.isWindowModified()
+    # the sources and the time are not changes of the panels
+    window.set_time(5.0)
+    window.sources_edit.setText(f"A={data_dir / 'a.nc'}")
+    window.apply_sources()
+    assert not window.isWindowModified()
+
+    window.change_layout(window.panels[0], "add_below")
+    assert window.isWindowModified()
+    window._save_to(tmp_path / "saved.yaml")
+    assert not window.isWindowModified()
+    assert window.windowTitle() == "idscope — idscope demo[*]"
+
+    window.panels[0].add_signal("summary/global_quantities/ip/value")
+    assert window.isWindowModified()
+    window.load_config_file(config_path)
+    assert not window.isWindowModified()
+
+    # the setup dialog, when something changed in it
+    def setup(change):
+        def exec_(dialog):
+            change(dialog)
+            dialog.apply()
+            return 1
+        monkeypatch.setattr(SetupDialog, "exec", exec_)
+        window.open_setup(window.panels[1])
+
+    setup(lambda dialog: None)
+    assert not window.isWindowModified()
+    setup(lambda dialog: dialog.title.setText("Flux"))
+    assert window.isWindowModified()
+    assert window.panels[1].config.title == "Flux"
+
+    for change in (
+        lambda: window.share_x_action.trigger(),
+        lambda: window.columns_splitter.splitterMoved.emit(300, 1),  # dragged
+    ):
+        window.load_config_file(config_path)
+        change()
+        assert window.isWindowModified()
+
+    window.new_from_template("equilibrium")
+    assert not window.isWindowModified()
+    assert window.windowTitle() == "idscope — equilibrium[*]"
+    window.new_config()
+    assert window.windowTitle() == "idscope[*]"
+    assert [s.label for s in window.config.sources] == ["A", "B"]  # kept
+
+    window.close()
+    assert not session_path().exists()  # only the window of `idscope` keeps a session
+
+
+def test_recent_files(window, config_path, tmp_path, monkeypatch):
+    warnings = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning",
+                        lambda parent, title, text: warnings.append(text))
+    saved = tmp_path / "saved.yaml"
+    window._save_to(saved)
+    assert window.recent_files == [str(saved), str(config_path)]
+    assert window.recent_menu.actions()[0].text().startswith("&1 ")
+
+    saved.unlink()
+    window.recent_menu.actions()[0].trigger()
+    assert "Cannot read" in warnings[0]
+    assert window.recent_files == [str(config_path)]  # forgotten
+    window.recent_menu.actions()[0].trigger()
+    assert window.config_path == config_path
+    assert len(window.panels) == len(KINDS)
+
+    clear = window.recent_menu.actions()[-1]
+    assert clear.text() == "Clear list"
+    clear.trigger()
+    assert window.recent_files == [] and not window.recent_menu.isEnabled()
+
+
+def test_session_and_settings(qtbot, config_path):
+    from idscope.gui import create_application, create_window
+    from idscope.session import load_session, session_path
+
+    create_application()
+    first = create_window(load_config(config_path), config_path, persist=True)
+    qtbot.addWidget(first)
+    first.resize(760, 560)
+    first.show()
+    size = first.size()
+    first.set_mode("zoom")
+    first.browser_dock.hide()
+    first.browser.ids_combo.setCurrentIndex(first.browser.ids_combo.findText("summary"))
+    first.change_layout(first.panels[0], "remove")
+    first.set_time(4.0)
+    # the session is written a moment after a change, before the window closes
+    qtbot.waitUntil(session_path().is_file, timeout=5000)
+    assert load_session().modified
+    first.close()
+
+    session = load_session()
+    assert session.config_path == config_path
+    assert session.modified
+    assert session.config.time == 4.0
+    assert len(session.config.panels()) == len(KINDS) - 1
+
+    second = create_window(session.config, session.config_path,
+                           modified=session.modified, persist=True)
+    qtbot.addWidget(second)
+    second.show()
+    assert second.isWindowModified()
+    assert len(second.panels) == len(KINDS) - 1
+    assert second.time == 4.0
+    assert second.mode == "zoom" and second.mode_actions["zoom"].isChecked()
+    # the size of the first window (not 1300 x 850), within the 800 x 600 screen of
+    # the offscreen platform
+    assert second.height() == size.height() and second.width() <= size.width()
+    assert not second.browser_dock.isVisible()
+    assert second.browser.ids_combo.currentText() == "summary"
+    assert second.recent_files == [str(config_path)]
+
+
+def test_sizes_are_kept_until_dragged(window, tmp_path):
+    from idscope.templates import load_template
+
+    window.new_from_template("pf_active")
+    path = tmp_path / "pf_active.yaml"
+    window._save_to(path)
+    template = load_template("pf_active")
+    assert [c.width for c in load_config(path).columns] == [c.width for c in template.columns]
+    assert [p.height for p in load_config(path).panels()] == [
+        p.height for p in template.panels()
+    ]
+    # dragged by the user
+    window.columns_splitter.setSizes([300, 700])
+    window.columns_splitter.splitterMoved.emit(300, 1)
+    window._save_to(path)
+    widths = [c.width for c in load_config(path).columns]
+    assert widths[1] / widths[0] == pytest.approx(7 / 3, rel=0.02)
+
+
+def test_time_of_the_configuration(qtbot, config_path):
+    from idscope.gui import create_application, create_window
+
+    create_application()
+    config = load_config(config_path)
+    config.time = 7.0
+    win = create_window(config, config_path)
+    qtbot.addWidget(win)
+    assert win.time == 7.0
+    assert win.panels[0]._time_line.value() == 7.0
+    # the time bar shows it too
+    assert win.timebar.spin.value() == 7.0
+    assert win.timebar.grid[win.timebar.slider.value()] == 7.0
