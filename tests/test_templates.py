@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from idscope.errors import ConfigError
@@ -65,13 +66,50 @@ def test_core_profiles_template_on_dd3_data(template_window, dd3_file):
     assert ti.path.text == "core_profiles/profiles_1d/t_i_average[0]"
 
 
+def x_titles(window):
+    return {panel.plot.getAxis("bottom").labelText for panel in window.panels}
+
+
 def test_equilibrium_template_on_dd3_data(template_window, dd3_file):
     window = template_window("equilibrium", [dd3_file])
+    assert all(panel.kind == "profile" for panel in window.panels)
+    # The training data has no lower triangularity profile
     errors = errors_by_panel(window)
-    assert set(errors) == {"Internal inductance, beta"}
-    assert any("beta_normal' is not filled" in e for e in errors["Internal inductance, beta"])
-    j = next(p for p in window.panels if p.config.title == "Toroidal current density")
+    assert set(errors) == {"Shape"}
+    assert "triangularity_lower' is not filled" in errors["Shape"][0]
+    j = next(p for p in window.panels if p.config.title == "Current density")
     assert j.curves[0].data.path.text == "equilibrium/time_slice/profiles_1d/j_tor"
-    flux = next(p for p in window.panels if p.config.title == "Poloidal flux")
-    assert flux.kind == "map"
-    assert [type(c.data).__name__ for c in flux.curves] == ["MapSeries", "ProfileSeries"]
+    assert x_titles(window) == {"rho_tor_norm"}
+
+
+@pytest.fixture(scope="module")
+def no_rho_file(tmp_path_factory):
+    """Demo data without rho_tor_norm (in core_profiles and equilibrium)."""
+    from idscope.demo import write_entry
+
+    path = tmp_path_factory.mktemp("no_rho") / "no_rho.nc"
+    write_entry(str(path), 0.8, rho_tor_norm=False)
+    return path
+
+
+def test_equilibrium_template_without_rho_tor_norm(template_window, no_rho_file):
+    window = template_window("equilibrium", [no_rho_file])
+    assert errors_by_panel(window) == {}
+    # profiles are drawn against psi normalized from the axis to the boundary
+    assert x_titles(window) == {"psi_n"}
+    x, _, _ = window.panels[0].curves[0].data.at(5.0)
+    np.testing.assert_allclose(x, np.linspace(0.0, 1.0, 51) ** 2)
+    # one shared x axis per column
+    for panels in window.column_panels:
+        master = panels[0].plot.getViewBox()
+        assert all(p.plot.getViewBox().linkedView(0) is master for p in panels[1:])
+
+
+def test_core_profiles_template_without_rho_tor_norm(template_window, no_rho_file):
+    window = template_window("core_profiles", [no_rho_file])
+    assert errors_by_panel(window) == {}
+    traces, profiles, images = window.column_panels
+    assert {p.plot.getAxis("bottom").labelText for p in profiles} == {"psi_n"}
+    assert {p.plot.getAxis("left").labelText for p in images} == {"psi_n"}
+    x, _, _ = profiles[0].curves[0].data.at(5.0)
+    np.testing.assert_allclose(x, np.linspace(0.0, 1.0, 51) ** 2)

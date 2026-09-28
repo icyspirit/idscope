@@ -18,6 +18,8 @@ TIME_LINE_COLOR = "#808080"
 ERROR_COLOR = "#c62828"
 CURRENT_PANEL_COLOR = "#1f77b4"
 COLORMAP = "viridis"
+CONTOUR_COLORMAP = "turbo"
+"""Colors of contour lines: dark at both ends, so that lines show on white."""
 
 
 def configure_pyqtgraph() -> None:

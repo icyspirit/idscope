@@ -1,86 +1,61 @@
-# idscope template: overview of the equilibrium IDS.
+# idscope template: profiles of the equilibrium IDS.
 #
 #   idscope -T equilibrium SOURCE [SOURCE ...]
 #
-# Paths separated by "|" are alternatives, tried in order: they cover quantities
-# that are named differently in Data Dictionary 3 and 4.
+# Profiles are drawn against rho_tor_norm or, when it is not filled, against the
+# normalized poloidal flux: psi_norm, or psi normalized from the magnetic axis to
+# the boundary with norm(). Paths separated by "|" are alternatives, tried in order;
+# they also cover names that differ between Data Dictionary 3 and 4.
 title: equilibrium
 columns:
-  # Time traces
-  - panels:
-      - title: Plasma current
-        signals:
-          - path: equilibrium/time_slice/global_quantities/ip
-            label: Ip
-            scale: 1.0e-6
-        y_label: Ip [MA]
-      - title: Safety factor
-        signals:
-          - path: equilibrium/time_slice/global_quantities/q_95
-            label: q_95
-          - path: equilibrium/time_slice/global_quantities/q_axis
-            label: q_axis
-        y_label: q
-      - title: Internal inductance, beta
-        signals:
-          - path: equilibrium/time_slice/global_quantities/li_3
-            label: li_3
-          - path: equilibrium/time_slice/global_quantities/beta_pol
-            label: beta_pol
-          - path: equilibrium/time_slice/global_quantities/beta_tor_norm | equilibrium/time_slice/global_quantities/beta_normal
-            label: beta_N
-        y_label: li_3, beta
-      - title: Magnetic axis
-        signals:
-          - path: equilibrium/time_slice/global_quantities/magnetic_axis/r
-            label: R_axis
-          - path: equilibrium/time_slice/global_quantities/magnetic_axis/z
-            label: Z_axis
-        y_label: "[m]"
-      - title: Shape
-        signals:
-          - path: equilibrium/time_slice/boundary/elongation
-            label: elongation
-          - path: equilibrium/time_slice/boundary/triangularity
-            label: triangularity
-        y_label: kappa, delta
-  # Profiles at the selected time, against the normalized toroidal flux coordinate
   - panels:
       - title: Safety factor
         signals:
           - path: equilibrium/time_slice/profiles_1d/q
-            x: equilibrium/time_slice/profiles_1d/rho_tor_norm
+            x: &x equilibrium/time_slice/profiles_1d/rho_tor_norm | equilibrium/time_slice/profiles_1d/psi_norm | norm(equilibrium/time_slice/profiles_1d/psi)
             label: q
-        x_label: rho_tor_norm
         y_label: q
       - title: Pressure
         signals:
           - path: equilibrium/time_slice/profiles_1d/pressure
-            x: equilibrium/time_slice/profiles_1d/rho_tor_norm
+            x: *x
             label: p
             scale: 1.0e-3
-        x_label: rho_tor_norm
         y_label: p [kPa]
-      - title: Toroidal current density
+      - title: Current density
         signals:
           - path: equilibrium/time_slice/profiles_1d/j_phi | equilibrium/time_slice/profiles_1d/j_tor
-            x: equilibrium/time_slice/profiles_1d/rho_tor_norm
+            x: *x
             label: j_phi
             scale: 1.0e-6
-        x_label: rho_tor_norm
-        y_label: j_phi [MA m^-2]
-  # Poloidal cross-section at the selected time
-  - width: 1.2
-    panels:
-      - title: Poloidal flux
-        kind: map
-        equal_aspect: true
-        contours: 12
+          - path: equilibrium/time_slice/profiles_1d/j_parallel
+            x: *x
+            label: j_parallel
+            scale: 1.0e-6
+        y_label: j [MA m^-2]
+  - panels:
+      - title: Pressure gradient
         signals:
-          - path: equilibrium/time_slice/profiles_2d[0]/psi
-            label: psi
-          - path: equilibrium/time_slice/boundary/outline/z
-            x: equilibrium/time_slice/boundary/outline/r
-            label: boundary
-        x_label: R [m]
-        y_label: Z [m]
+          - path: equilibrium/time_slice/profiles_1d/dpressure_dpsi
+            x: *x
+            label: dp/dpsi
+            scale: 1.0e-3
+        y_label: dp/dpsi [kPa Wb^-1]
+      - title: FF'
+        signals:
+          - path: equilibrium/time_slice/profiles_1d/f_df_dpsi
+            x: *x
+            label: FF'
+        y_label: FF' [T^2 m^2 Wb^-1]
+      - title: Shape
+        signals:
+          - path: equilibrium/time_slice/profiles_1d/elongation
+            x: *x
+            label: elongation
+          - path: equilibrium/time_slice/profiles_1d/triangularity_upper
+            x: *x
+            label: triangularity (upper)
+          - path: equilibrium/time_slice/profiles_1d/triangularity_lower
+            x: *x
+            label: triangularity (lower)
+        y_label: kappa, delta

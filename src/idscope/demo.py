@@ -31,10 +31,15 @@ def _set_first(node, names, value) -> None:
             return
 
 
-def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME):
+def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME,
+                  rho_tor_norm: bool = True):
     """core_profiles with homogeneous time, electrons and two ion species.
 
     The second ion species is missing in the last three time slices.
+
+    Args:
+        rho_tor_norm: fill ``profiles_1d/grid/rho_tor_norm`` (profiles can otherwise
+            be drawn against the normalized psi).
     """
     from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
 
@@ -49,7 +54,8 @@ def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME):
     cp.profiles_1d.resize(n_time)
     for i, p1d in enumerate(cp.profiles_1d):
         p1d.time = t[i]
-        p1d.grid.rho_tor_norm = rho
+        if rho_tor_norm:
+            p1d.grid.rho_tor_norm = rho
         p1d.grid.psi = 20.0 * rho**2
         shape = (1.0 - rho**2) ** 1.5
         p1d.electrons.temperature = te0[i] * shape + 50.0
@@ -76,8 +82,14 @@ def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME):
     return cp
 
 
-def equilibrium(factory, scale: float = 1.0, n_time: int = N_TIME):
-    """equilibrium with scalars, 1D profiles and a rectangular (R, Z) psi map."""
+def equilibrium(factory, scale: float = 1.0, n_time: int = N_TIME,
+                rho_tor_norm: bool = True):
+    """equilibrium with scalars, 1D profiles and a rectangular (R, Z) psi map.
+
+    Args:
+        rho_tor_norm: fill ``profiles_1d/rho_tor_norm`` (profiles can otherwise be
+            drawn against the normalized psi).
+    """
     from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
 
     eq = factory.equilibrium()
@@ -108,12 +120,21 @@ def equilibrium(factory, scale: float = 1.0, n_time: int = N_TIME):
         gq.magnetic_axis.z = 0.01 * np.sin(2.0 * t[i])
         ts.boundary.elongation = kappa
         ts.boundary.triangularity = 0.25
-        ts.profiles_1d.psi = rho**2
-        ts.profiles_1d.rho_tor_norm = rho
-        ts.profiles_1d.q = 1.0 + (2.0 + 1.0 * ramp) * rho**2
-        ts.profiles_1d.pressure = scale * 1.0e5 * ramp * (1.0 - rho**2) ** 2
-        _set_first(ts.profiles_1d, ("j_phi", "j_tor"),
-                   scale * 1.5e6 * ramp * (1.0 - rho**2) ** 1.2)
+        p1d = ts.profiles_1d
+        psi = rho**2  # normalized: 0 on the magnetic axis, 1 on the boundary
+        p1d.psi = scale * psi  # as the psi map below
+        if rho_tor_norm:
+            p1d.rho_tor_norm = rho
+        p1d.q = 1.0 + (2.0 + 1.0 * ramp) * psi
+        p1d.pressure = scale * 1.0e5 * ramp * (1.0 - psi) ** 2
+        p1d.dpressure_dpsi = -scale * 2.0e5 * ramp * (1.0 - psi)
+        p1d.f_df_dpsi = -scale * 0.5 * ramp * (1.0 - psi) ** 1.5
+        j_phi = scale * 1.5e6 * ramp * (1.0 - psi) ** 1.2
+        _set_first(p1d, ("j_phi", "j_tor"), j_phi)
+        p1d.j_parallel = 1.05 * j_phi
+        p1d.elongation = 1.0 + (kappa - 1.0) * rho
+        p1d.triangularity_upper = 0.3 * rho**2
+        p1d.triangularity_lower = 0.2 * rho**2
         ts.profiles_2d.resize(1)
         p2d = ts.profiles_2d[0]
         p2d.grid_type.index = 1
@@ -155,14 +176,20 @@ def summary(factory, scale: float = 1.0, n_time: int = N_TIME):
     return summ
 
 
-def write_entry(uri: str, scale: float = 1.0, dd_version: Optional[str] = None) -> None:
-    """Write all demo IDSs to ``uri`` (a netCDF path or an IMAS URI)."""
+def write_entry(uri: str, scale: float = 1.0, dd_version: Optional[str] = None,
+                rho_tor_norm: bool = True) -> None:
+    """Write all demo IDSs to ``uri`` (a netCDF path or an IMAS URI).
+
+    Args:
+        rho_tor_norm: fill the rho_tor_norm grids of core_profiles and equilibrium.
+    """
     import imas
 
     kwargs = {"dd_version": dd_version} if dd_version else {}
     with imas.DBEntry(uri, "w", **kwargs) as entry:
         factory = entry.factory
-        for ids in (core_profiles(factory, scale), equilibrium(factory, scale),
+        for ids in (core_profiles(factory, scale, rho_tor_norm=rho_tor_norm),
+                    equilibrium(factory, scale, rho_tor_norm=rho_tor_norm),
                     magnetics(factory, scale), summary(factory, scale)):
             entry.put(ids)
 

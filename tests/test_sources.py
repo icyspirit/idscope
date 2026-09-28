@@ -72,6 +72,29 @@ def test_first_signal_alternatives(source_a, dd3_file):
         source_a.first_signal(missing)
 
 
+def test_first_signal_x_alternatives(source_a):
+    from idscope.data import parse_alternatives
+
+    q = parse_alternatives("equilibrium/time_slice/profiles_1d/q")
+    x = parse_alternatives(
+        "equilibrium/time_slice/profiles_1d/psi_norm"
+        " | norm(equilibrium/time_slice/profiles_1d/psi)"
+    )
+    assert source_a.first_signal(q, x).x_axis.title() == "psi_n"
+    # a quantity that is not filled is reported as such, whatever its x
+    gm1 = parse_alternatives("equilibrium/time_slice/profiles_1d/gm1")
+    with pytest.raises(NoDataError) as info:
+        source_a.first_signal(gm1, x)
+    assert str(info.value) == "'equilibrium/time_slice/profiles_1d/gm1' is not filled."
+    # x paths that cannot be read are listed
+    x_missing = parse_alternatives(
+        "equilibrium/time_slice/profiles_1d/psi_norm"
+        " | equilibrium/time_slice/profiles_1d/rho_tor"
+    )
+    with pytest.raises(NoDataError, match=r"psi_norm' is not filled\. \(tried x: "):
+        source_a.first_signal(q, x_missing)
+
+
 def test_missing_file(tmp_path):
     source = DataSource(parse_source(str(tmp_path / "missing.nc")))
     with pytest.raises((SourceError, NoDataError)):

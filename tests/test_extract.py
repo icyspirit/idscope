@@ -7,6 +7,7 @@ from idscope.data import (
     Trace,
     parse_signal_path,
 )
+from idscope.data.extract import normalize
 from idscope.data.sources import DataSource, parse_source
 from idscope.errors import NoDataError, PathError
 
@@ -90,10 +91,40 @@ def test_profile_with_x_path(source_a):
         x="core_profiles/profiles_1d/grid/psi",
     )
     np.testing.assert_allclose(data.xs[0], 20 * np.linspace(0, 1, 51) ** 2)
-    assert data.x_axis.label == "grid/psi"
+    assert data.x_axis.title() == "psi [Wb]"
     with pytest.raises(PathError):
         get(source_a, "core_profiles/global_quantities/ip",
             x="core_profiles/profiles_1d/grid/psi")
+
+
+def test_normalized_profile(source_a):
+    rho = np.linspace(0, 1, 51)
+    psi_n = get(source_a, "norm(core_profiles/profiles_1d/grid/psi)")
+    assert isinstance(psi_n, ProfileSeries)
+    assert len(psi_n.ys) == 41
+    np.testing.assert_allclose(psi_n.ys[3], rho**2)
+    assert psi_n.value_axis.title() == "psi_n"
+    te = get(
+        source_a,
+        "core_profiles/profiles_1d/electrons/temperature",
+        x="norm(core_profiles/profiles_1d/grid/psi)",
+    )
+    np.testing.assert_allclose(te.xs[0], rho**2)
+    assert te.x_axis.title() == "psi_n"
+
+
+def test_normalize_errors(source_a):
+    with pytest.raises(PathError, match="applies to profiles"):
+        get(source_a, "norm(core_profiles/global_quantities/ip)")
+    q = get(source_a, "core_profiles/profiles_1d/q")
+    flat = ProfileSeries(q.path, q.time, q.xs, [np.ones_like(y) for y in q.ys],
+                         q.x_axis, q.value_axis)
+    with pytest.raises(NoDataError, match="first and last values are missing or equal"):
+        normalize(flat)
+    # Slices that cannot be normalized are left empty (NaN), the others are kept
+    flat.ys[0] = q.ys[0]
+    ys = normalize(flat).ys
+    assert np.isfinite(ys[0]).all() and np.isnan(ys[1]).all()
 
 
 def test_map_series(source_a):
@@ -164,5 +195,9 @@ def test_other_major_dd_version(dd3_file):
         assert any("3.39.0" in note for note in source.notes)
         psi = get(source, "equilibrium/time_slice/profiles_2d[0]/psi")
         assert psi.at(0.0)[2].shape == (65, 129)
+        # psi decreases from the magnetic axis to the boundary in this data
+        psi_n = get(source, "norm(equilibrium/time_slice/profiles_1d/psi)")
+        for y in psi_n.ys:
+            assert y[0] == 0.0 and y[-1] == 1.0 and np.all(np.diff(y) > 0)
     finally:
         source.close()

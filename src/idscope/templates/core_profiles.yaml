@@ -4,7 +4,8 @@
 #
 # Paths separated by "|" are alternatives, tried in order: they cover quantities
 # that are named differently in Data Dictionary 3 and 4, or filled differently by
-# different codes.
+# different codes. Profiles are drawn against rho_tor_norm or, when it is not
+# filled, against psi normalized from the magnetic axis to the boundary (psi_n).
 title: core_profiles
 columns:
   # Time traces
@@ -47,41 +48,50 @@ columns:
       - title: Temperatures
         signals:
           - path: core_profiles/profiles_1d/electrons/temperature
+            x: &x core_profiles/profiles_1d/grid/rho_tor_norm | norm(core_profiles/profiles_1d/grid/psi)
             label: Te
             scale: 1.0e-3
           - path: core_profiles/profiles_1d/t_i_average | core_profiles/profiles_1d/ion[0]/temperature
+            x: *x
             label: Ti
             scale: 1.0e-3
         y_label: T [keV]
       - title: Densities
         signals:
           - path: core_profiles/profiles_1d/electrons/density
+            x: *x
             label: ne
             scale: 1.0e-19
           - path: core_profiles/profiles_1d/n_i_thermal_total | core_profiles/profiles_1d/ion[0]/density
+            x: *x
             label: ni
             scale: 1.0e-19
         y_label: n [1e19 m^-3]
       - title: Safety factor
         signals:
           - path: core_profiles/profiles_1d/q
+            x: *x
             label: q
         y_label: q
       - title: Current densities
         signals:
           - path: core_profiles/profiles_1d/j_total
+            x: *x
             label: j_total
             scale: 1.0e-6
           - path: core_profiles/profiles_1d/j_ohmic
+            x: *x
             label: j_ohmic
             scale: 1.0e-6
           - path: core_profiles/profiles_1d/j_bootstrap
+            x: *x
             label: j_bootstrap
             scale: 1.0e-6
         y_label: j [MA m^-2]
       - title: Effective charge
         signals:
           - path: core_profiles/profiles_1d/zeff
+            x: *x
             label: Zeff
         y_label: Zeff
   # Profiles over time
@@ -90,11 +100,13 @@ columns:
         kind: spacetime
         signals:
           - path: core_profiles/profiles_1d/electrons/temperature
+            x: *x
             label: Te
             scale: 1.0e-3
       - title: ne [1e19 m^-3]
         kind: spacetime
         signals:
           - path: core_profiles/profiles_1d/electrons/density
+            x: *x
             label: ne
             scale: 1.0e-19

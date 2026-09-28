@@ -48,7 +48,9 @@ class SignalConfig:
     """Plotted value is ``value * scale + offset``."""
     x: Optional[str] = None
     """Path of the x values of a profile (default: its Data Dictionary coordinate).
-    Alternatives are separated by ``|``."""
+    Alternatives are separated by ``|``, e.g. ``core_profiles/profiles_1d/grid/rho_tor_norm
+    | norm(core_profiles/profiles_1d/grid/psi)`` to use psi_n when rho_tor_norm is not
+    filled."""
     color: Optional[str] = None
     sources: Optional[List[str]] = None
     """Labels of the sources to plot this signal for (default: all)."""
@@ -70,7 +72,8 @@ class PanelConfig:
     equal_aspect: bool = False
     """Same scale on both axes, e.g. for maps in the (R, Z) plane."""
     contours: int = 0
-    """Number of contour lines drawn on a map."""
+    """Draw maps and time-space images as this many contour lines instead of an image
+    (0: image)."""
     height: float = 1.0
     """Relative height within the column."""
 

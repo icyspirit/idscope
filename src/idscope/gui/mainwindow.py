@@ -66,7 +66,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.panels: List[Panel] = []
         self.current_panel: Optional[Panel] = None
         self.time: Optional[float] = self.config.time
-        self.mode = "zoom"
+        self.mode = "pan"
         self.resize(1300, 850)
 
         self._build_toolbar()
@@ -106,8 +106,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mode_group = QtGui.QActionGroup(self)
         self.mode_actions = {}
         for mode, text, tip in (
+            ("pan", "Pan", "Drag to move the view, right-drag to scale, wheel to zoom"),
             ("zoom", "Zoom", "Drag a rectangle to zoom, right-drag to scale, wheel to zoom"),
-            ("pan", "Pan", "Drag to move the view, wheel to zoom"),
             ("point", "Point", "Click or drag in a time trace to set the time, "
                                "read values in the status bar"),
         ):
@@ -118,7 +118,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.mode_group.addAction(action)
             toolbar.addAction(action)
             self.mode_actions[mode] = action
-        self.mode_actions["zoom"].setChecked(True)
+        self.mode_actions[self.mode].setChecked(True)
         toolbar.addSeparator()
         autoscale = toolbar.addAction("Autoscale all")
         autoscale.setToolTip("Autoscale all panels (a double-click opens the setup)")
