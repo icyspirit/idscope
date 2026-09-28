@@ -43,6 +43,8 @@ class BrowserWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self._sources: List[DataSource] = []
         self._items: List[BrowseItem] = []
+        self.preferred_ids = ""
+        """IDS to show first, e.g. the one shown when idscope was last closed."""
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         self.source_combo = QtWidgets.QComboBox()
@@ -109,7 +111,7 @@ class BrowserWidget(QtWidgets.QWidget):
         return self._sources[index] if 0 <= index < len(self._sources) else None
 
     def _on_source(self, *_) -> None:
-        previous = self.ids_combo.currentText()
+        previous = self.ids_combo.currentText() or self.preferred_ids
         with QtCore.QSignalBlocker(self.ids_combo):
             self.ids_combo.clear()
         self.tree.clear()

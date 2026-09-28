@@ -5,6 +5,14 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
+@pytest.fixture(autouse=True)
+def user_config_dir(tmp_path, monkeypatch):
+    """Keep idscope's settings and last session away from the user's."""
+    directory = tmp_path / "user_config"
+    monkeypatch.setenv("IDSCOPE_CONFIG_DIR", str(directory))
+    return directory
+
+
 @pytest.fixture(scope="session")
 def data_dir(tmp_path_factory):
     """Synthetic IMAS data: two netCDF files and one HDF5 entry."""

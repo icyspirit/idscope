@@ -9,12 +9,15 @@ from typing import List, Optional, Tuple
 
 from idscope import __version__
 from idscope.config import ScopeConfig, default_config, load_config
-from idscope.errors import IdscopeError
+from idscope.errors import ConfigError, IdscopeError
+from idscope.session import config_dir, load_session
 from idscope.templates import load_template, template_names
 
 EPILOG = """\
 examples:
-  idscope shot.nc                        browse a netCDF file
+  idscope                                continue the last session
+  idscope shot.nc                        the panels of the last session, other data
+  idscope --new shot.nc                  browse a netCDF file in empty panels
   idscope scope.yaml                     open a saved configuration
   idscope scope.yaml -s A=a.nc -s B=b.nc apply a configuration to other data
   idscope -T equilibrium a.nc b.nc       compare two sources with a template
@@ -24,6 +27,10 @@ examples:
 
 Sources are IDS netCDF files, IMAS URIs (imas:hdf5?path=...) or HDF5 entry
 directories. Prefix a source with LABEL= to name it in legends.
+
+Without a configuration file or a template, idscope shows the panels of the last
+session. It keeps them, and its settings, in {config_dir}
+($IDSCOPE_CONFIG_DIR sets another directory).
 """
 
 
@@ -31,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="idscope",
         description="A lightweight jScope-like viewer for IMAS IDS data.",
-        epilog=EPILOG,
+        epilog=EPILOG.format(config_dir=config_dir()),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -45,6 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-T", "--template", metavar="NAME",
         help="start from a template (see --list-templates) instead of a configuration",
+    )
+    parser.add_argument(
+        "--new", action="store_true",
+        help="start with empty panels instead of those of the last session",
     )
     parser.add_argument(
         "--list-templates", action="store_true", help="print the template names and exit"
@@ -71,8 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def assemble_config(args) -> Tuple[ScopeConfig, Optional[Path]]:
-    """Combine the configuration file and the sources given on the command line."""
+def assemble_config(args) -> Tuple[ScopeConfig, Optional[Path], bool]:
+    """Combine a configuration and the sources given on the command line.
+
+    The configuration is a file, a template or else the last session. Returns it, its
+    file and whether its panels have changes that are not saved to that file.
+    """
     from idscope.data.sources import parse_source, unique_labels
 
     configs = [i for i in args.inputs if i.lower().endswith((".yaml", ".yml"))]
@@ -80,19 +95,32 @@ def assemble_config(args) -> Tuple[ScopeConfig, Optional[Path]]:
     if len(configs) + bool(args.template) > 1:
         raise IdscopeError("Give one configuration file or one template.")
     config_path = Path(configs[0]) if configs else None
+    modified = False
     if config_path:
         config = load_config(config_path)
     elif args.template:
         config = load_template(args.template)
     else:
-        config = default_config()
+        session = None if args.new else _last_session()
+        if session is not None:
+            config, config_path, modified = session
+        else:
+            config = default_config()
     if sources:
         config.sources = unique_labels([parse_source(s) for s in sources])
     if args.dd_version:
         config.dd_version = args.dd_version
     if args.time is not None:
         config.time = args.time
-    return config, config_path
+    return config, config_path, modified
+
+
+def _last_session():
+    try:
+        return load_session()
+    except ConfigError as exc:
+        print(f"idscope: warning: {exc}\nStarting with empty panels.", file=sys.stderr)
+        return None
 
 
 def list_command(args) -> int:
@@ -159,7 +187,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         if args.list:
             return list_command(args)
-        config, config_path = assemble_config(args)
+        config, config_path, modified = assemble_config(args)
         if args.export:
             return export_command(config, config_path, args)
         try:
@@ -171,7 +199,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        return run(config, config_path, args.time)
+        return run(config, config_path, args.time, modified)
     except IdscopeError as exc:
         print(f"idscope: error: {exc}", file=sys.stderr)
         return 1

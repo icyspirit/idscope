@@ -13,6 +13,7 @@ viewer for [IMAS](https://imas.iter.org) IDS data. It reads data with
 - coils, walls and plasma boundaries drawn in the poloidal (R, Z) plane,
 - an IDS browser that lists the quantities filled in a source,
 - configurations saved as YAML, which can be applied to other data,
+- the last session back when idscope starts again: panels, sources and time,
 - templates for `core_profiles`, `equilibrium` and `pf_active`.
 
 ![idscope showing two synthetic data sources](docs/idscope-demo.png)
@@ -44,8 +45,10 @@ idscope demo/demo.yaml
 Other ways to start:
 
 ```bash
+idscope                                      # continue the last session
+idscope shot.nc                              # the panels of the last session, other data
+idscope --new shot.nc                        # browse a netCDF file in empty panels
 idscope -T equilibrium a.nc b.nc             # compare two sources with a template
-idscope shot.nc                              # browse a netCDF file
 idscope scope.yaml                           # open a configuration
 idscope scope.yaml -s A=a.nc -s "ref=imas:hdf5?path=/data/entry"
                                              # same configuration, other data
@@ -86,7 +89,7 @@ A template saved with File → Save as becomes a configuration that can be edite
 | Browse signals | **IDS browser** (left): double-click or drag a quantity onto a panel |
 | Wave setup (double-click) | **Setup** dialog: double-click a panel |
 | Zoom / Point / Pan modes | **Pan** (default) / **Zoom** / **Point** in the toolbar |
-| Save / Load settings (`.jscp`) | File → Save / Open (YAML) |
+| Save / Load settings (`.jscp`) | File → Save / Open (YAML); the last session comes back by itself |
 
 - **Sources** are IDS netCDF files (`shot.nc`), IMAS URIs
   (`imas:hdf5?path=/data/entry`, `imas:mdsplus?...`) or HDF5 entry directories.
@@ -103,6 +106,31 @@ A template saved with File → Save as becomes a configuration that can be edite
   and pyqtgraph's *Export…* (PNG, SVG, CSV of the curves).
 - Signals that cannot be shown are reported in the panel (hover for details) and in
   View → Log.
+
+## Sessions
+
+idscope keeps the scope of the last session: its panels, sources, sizes and time.
+Started without a configuration file or a template, it shows them again.
+
+| command | panels | sources |
+|---|---|---|
+| `idscope` | of the last session | of the last session |
+| `idscope shot.nc` | of the last session | `shot.nc` |
+| `idscope --new shot.nc` | empty | `shot.nc` |
+| `idscope scope.yaml [shot.nc]` | of `scope.yaml` | of `scope.yaml`, or `shot.nc` |
+| `idscope -T NAME shot.nc` | of the template | `shot.nc` |
+
+Nothing is lost when idscope closes, so it does not ask to save. Instead, the title
+shows `*` while the panels have changes that are not saved to the configuration file
+(the sources and the time do not count), and File → Save writes them to it. File →
+Open recent lists the configuration files opened or saved last. idscope also keeps
+the size of its window, its docks, the mouse mode and the IDS shown in the browser.
+An export (`-e`) shows the same panels as the window would, and leaves the session
+as it is.
+
+The session (`session.yaml`, a configuration that can also be opened as one) and the
+settings (`settings.ini`) are in `~/.config/idscope`, or `%APPDATA%\idscope` on
+Windows, or `$IDSCOPE_CONFIG_DIR` if set.
 
 ## Signal paths
 
@@ -253,4 +281,5 @@ data bundled with imas-python.
 
 Code layout: `idscope.data` (sources, signal paths, extraction; no Qt),
 `idscope.config` (YAML configuration), `idscope.templates` (YAML templates),
+`idscope.session` (the last session and where settings are kept),
 `idscope.gui` (Qt widgets), `idscope.cli`.

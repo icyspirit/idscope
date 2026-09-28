@@ -267,8 +267,12 @@ def config_from_dict(data: Any, base_dir: Optional[Path] = None) -> ScopeConfig:
         data = {}
     if not isinstance(data, dict):
         raise ConfigError("The configuration must be a mapping.")
-    # "idscope" holds the format version, the other keys are ScopeConfig fields
-    _check_keys({k: v for k, v in data.items() if k != "idscope"}, ScopeConfig, "config")
+    # "idscope" holds the format version and "session" what the last session file
+    # adds (see idscope.session); the other keys are ScopeConfig fields
+    _check_keys(
+        {k: v for k, v in data.items() if k not in ("idscope", "session")},
+        ScopeConfig, "config",
+    )
     version = data.get("idscope", FORMAT_VERSION)
     if version != FORMAT_VERSION:
         raise ConfigError(
@@ -382,11 +386,15 @@ def config_to_dict(config: ScopeConfig, base_dir: Optional[Path] = None) -> dict
     return data
 
 
+def dump_yaml(data: dict) -> str:
+    """YAML text of a configuration converted by :func:`config_to_dict`."""
+    return yaml.safe_dump(
+        data, sort_keys=False, default_flow_style=None, allow_unicode=True, width=100
+    )
+
+
 def save_config(config: ScopeConfig, path) -> None:
     """Write a configuration as YAML (relative paths for files next to it)."""
     path = Path(path)
     data = config_to_dict(config, path.parent)
-    text = "# idscope configuration\n" + yaml.safe_dump(
-        data, sort_keys=False, default_flow_style=None, allow_unicode=True, width=100
-    )
-    path.write_text(text)
+    path.write_text("# idscope configuration\n" + dump_yaml(data))
