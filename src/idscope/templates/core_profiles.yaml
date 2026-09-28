@@ -4,8 +4,9 @@
 #
 # Paths separated by "|" are alternatives, tried in order: they cover quantities
 # that are named differently in Data Dictionary 3 and 4, or filled differently by
-# different codes. Profiles are drawn against rho_tor_norm or, when it is not
-# filled, against psi normalized from the magnetic axis to the boundary (psi_n).
+# different codes (e.g. only the thermal electron density). Profiles are drawn
+# against rho_tor_norm or, when it is not filled, against psi normalized from the
+# magnetic axis to the boundary (psi_n), or rho_pol_norm.
 title: core_profiles
 columns:
   # Time traces
@@ -27,7 +28,7 @@ columns:
         y_label: T(0) [keV]
       - title: Central electron density
         signals:
-          - path: core_profiles/profiles_1d/electrons/density[0]
+          - path: core_profiles/profiles_1d/electrons/density[0] | core_profiles/profiles_1d/electrons/density_thermal[0]
             label: ne(0)
             scale: 1.0e-19
         y_label: ne(0) [1e19 m^-3]
@@ -48,7 +49,7 @@ columns:
       - title: Temperatures
         signals:
           - path: core_profiles/profiles_1d/electrons/temperature
-            x: &x core_profiles/profiles_1d/grid/rho_tor_norm | norm(core_profiles/profiles_1d/grid/psi)
+            x: &x core_profiles/profiles_1d/grid/rho_tor_norm | norm(core_profiles/profiles_1d/grid/psi) | core_profiles/profiles_1d/grid/rho_pol_norm
             label: Te
             scale: 1.0e-3
           - path: core_profiles/profiles_1d/t_i_average | core_profiles/profiles_1d/ion[0]/temperature
@@ -58,7 +59,7 @@ columns:
         y_label: T [keV]
       - title: Densities
         signals:
-          - path: core_profiles/profiles_1d/electrons/density
+          - path: core_profiles/profiles_1d/electrons/density | core_profiles/profiles_1d/electrons/density_thermal
             x: *x
             label: ne
             scale: 1.0e-19
@@ -106,7 +107,7 @@ columns:
       - title: ne [1e19 m^-3]
         kind: spacetime
         signals:
-          - path: core_profiles/profiles_1d/electrons/density
+          - path: core_profiles/profiles_1d/electrons/density | core_profiles/profiles_1d/electrons/density_thermal
             x: *x
             label: ne
             scale: 1.0e-19

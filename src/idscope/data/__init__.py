@@ -3,15 +3,24 @@
 from idscope.data.extract import (
     MAP,
     PROFILE,
+    SHAPE,
     TRACE,
     Axis,
+    Channels,
     MapSeries,
     ProfileSeries,
+    Shapes,
     SignalData,
     Trace,
     extract_signal,
 )
-from idscope.data.paths import ALL, SignalPath, parse_alternatives, parse_signal_path
+from idscope.data.paths import (
+    ALL,
+    Range,
+    SignalPath,
+    parse_alternatives,
+    parse_signal_path,
+)
 from idscope.data.sources import (
     DataSource,
     SourcePool,
@@ -25,11 +34,15 @@ __all__ = [
     "ALL",
     "MAP",
     "PROFILE",
+    "SHAPE",
     "TRACE",
     "Axis",
+    "Channels",
     "DataSource",
     "MapSeries",
     "ProfileSeries",
+    "Range",
+    "Shapes",
     "SignalData",
     "SignalPath",
     "SourcePool",

@@ -9,8 +9,9 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from idscope.config import PanelConfig, SignalConfig
-from idscope.data import MAP, PROFILE, TRACE, MapSeries, ProfileSeries, SignalData
-from idscope.data import parse_alternatives
+from idscope.data import MAP, PROFILE, SHAPE, TRACE, Channels, MapSeries, ProfileSeries
+from idscope.data import Shapes, SignalData, parse_alternatives
+from idscope.data.extract import GEOMETRY, POINT
 from idscope.data.sources import DataSource
 from idscope.errors import IdscopeError
 from idscope.gui import style
@@ -32,13 +33,17 @@ COLORBAR_SPACE = COLORBAR_WIDTH + COLORBAR_GAP
 EDGE_PADDING = 14
 """Space between the data and the ends of the x axis, in pixels."""
 
-_DATA_KIND_TO_PANEL = {TRACE: "trace", PROFILE: "profile", MAP: "map"}
+_DATA_KIND_TO_PANEL = {TRACE: "trace", PROFILE: "profile", MAP: "map", SHAPE: "map"}
+_MAX_SHAPE_LABELS = 40
+"""Shapes are named on the map (e.g. coils) when there are no more of them."""
+_MAX_CATEGORY_LABELS = 24
 _HINT = "Double-click to set up, or drop a signal from the IDS browser"
 _FONT_SIZE = 8  # points
 
 
 class Curve(NamedTuple):
-    """One signal of one source, as plotted in a panel."""
+    """One signal of one source (or one member of a signal with wildcards), as
+    plotted in a panel."""
 
     signal: SignalConfig
     signal_index: int
@@ -46,7 +51,9 @@ class Curve(NamedTuple):
     source_index: int
     data: SignalData
     name: str
-    item: Optional[object]  # PlotDataItem / InfiniteLine, None for images
+    item: Optional[object]  # PlotDataItem / InfiniteLine / BarGraphItem, None for images
+    label: Optional[str] = None
+    """Text of its legend entry (None if it has none)."""
 
     def scaled(self, values: np.ndarray) -> np.ndarray:
         return values * self.signal.scale + self.signal.offset
@@ -92,6 +99,38 @@ def contour_lines(x1: np.ndarray, x2: np.ndarray, z: np.ndarray, count: int):
     return result
 
 
+def _joined(outlines: List[np.ndarray], separate: bool) -> Tuple[np.ndarray, np.ndarray]:
+    """x and y of several outlines, separated by NaN (drawn as one curve)."""
+    parts = []
+    for outline in outlines:
+        if outline.size:
+            parts.append(outline)
+            if separate:
+                parts.append(np.full((1, 2), np.nan))
+    if not parts:
+        return np.empty(0), np.empty(0)
+    points = np.vstack(parts)
+    if not separate:
+        points = points[np.all(np.isfinite(points), axis=1)]
+    return points[:, 0], points[:, 1]
+
+
+def _mark_single_point(item, x, y) -> None:
+    """Show a curve of a single point (e.g. one time sample) with a symbol, since
+    a line through one point is invisible."""
+    if item is None:
+        return
+    finite = np.isfinite(np.asarray(x, float)) & np.isfinite(np.asarray(y, float))
+    single = int(finite.sum()) == 1
+    if single != (item.opts.get("symbol") is not None):
+        pen = item.opts["pen"]
+        color = pg.mkPen(pen).color() if pen is not None else "k"
+        item.setSymbol("o" if single else None)
+        item.setSymbolSize(6)
+        item.setSymbolBrush(color)
+        item.setSymbolPen(color)
+
+
 def _format(value: float) -> str:
     return f"{value:.5g}" if np.isfinite(value) else "nan"
 
@@ -131,6 +170,14 @@ class Panel(QtWidgets.QFrame):
         self._image_time: Optional[float] = None
         self._title_time: Optional[float] = None
         self._time_line = None
+        self._bars: List[Curve] = []  # members of wildcard traces, as bars per element
+        self._categories: List[str] = []  # the elements the bars stand for
+        self._member_colors: dict = {}  # (signal index, member name) -> color index
+        self._legend_entries: List[Tuple[object, str]] = []
+        self._legend_proxies: List[object] = []  # legend samples of the line styles
+        self._styled_sources = False  # sources are told apart by line style
+        self._shape_labels: List[object] = []  # names written on shapes (e.g. coils)
+        self._named_signals: set = set()  # signals whose shapes are named on the map
 
         self.setFrameShape(QtWidgets.QFrame.Shape.Box)
         self.set_current(False)
@@ -173,10 +220,8 @@ class Panel(QtWidgets.QFrame):
         layout.addWidget(self.graphics, stretch=1)
         self.plot = self.graphics.addPlot(row=0, col=0)
         self._style_plot()
-        self.legend = self.plot.addLegend(
-            offset=(-5, 3), labelTextSize=f"{_FONT_SIZE}pt",
-            brush=pg.mkBrush(255, 255, 255, 200), verSpacing=-6,
-        )
+        self.legend = None
+        self._new_legend()
         # The title is drawn inside the plot, like in jScope, to keep panels compact
         self.title_item = pg.TextItem(color="k", anchor=(0, 0),
                                       fill=pg.mkBrush(255, 255, 255, 150))
@@ -210,6 +255,21 @@ class Panel(QtWidgets.QFrame):
             axis.enableAutoSIPrefix(False)
         plot.getAxis("left").setWidth(LEFT_AXIS_WIDTH)
         plot.getViewBox().suggestPadding = self._suggest_padding
+
+    def _new_legend(self) -> None:
+        """Replace the legend by an empty one (pyqtgraph's clear() keeps the rows
+        of the removed entries, which then stretch the next ones)."""
+        old = self.plot.legend
+        if old is not None:
+            if old.scene() is not None:
+                old.scene().removeItem(old)
+            # LegendItem.setParentItem would anchor itself to the missing parent
+            QtWidgets.QGraphicsWidget.setParentItem(old, None)
+            self.plot.legend = None
+        self.legend = self.plot.addLegend(
+            offset=(-5, 3), labelTextSize=f"{_FONT_SIZE}pt",
+            brush=pg.mkBrush(255, 255, 255, 200), verSpacing=-6,
+        )
 
     def _suggest_padding(self, axis: int) -> float:
         """Auto-range padding: a few pixels along x, enough for the tick labels at
@@ -274,7 +334,7 @@ class Panel(QtWidgets.QFrame):
         """
         if self.kind in ("trace", "spacetime"):
             return "time"
-        if self.kind == "profile" and self.curves:
+        if self.kind == "profile" and self.curves and not self._bars:
             return f"{column}:{self.curves[0].data.x_axis.title()}"
         return None
 
@@ -305,7 +365,18 @@ class Panel(QtWidgets.QFrame):
             if curve.item is not None:
                 self.plot.removeItem(curve.item)
         self.curves = []
-        self.legend.clear()
+        self._new_legend()
+        self._legend_entries = []
+        self._legend_proxies = []
+        self._styled_sources = False
+        for label in self._shape_labels:
+            self.plot.removeItem(label)
+        self._shape_labels = []
+        self._named_signals = set()
+        self._bars = []
+        self._categories = []
+        self._member_colors = {}
+        self.plot.getAxis("bottom").setTicks(None)
         self._remove_image()
         if self._time_line is not None:
             self.plot.removeItem(self._time_line)
@@ -353,17 +424,20 @@ class Panel(QtWidgets.QFrame):
                 errors.append(f"{entry[3]}: {problem}")
             else:
                 accepted.append(entry)
-        n_sources = len({entry[3] for entry in accepted})
+        sources_shown = sorted({(entry[2], entry[3]) for entry in accepted})
         n_signals = len(self.config.signals)
-        for signal_index, signal, source_index, source, data in accepted:
-            name = signal.label or data.path.label
-            if n_sources > 1:
-                name += f" [{source}]"
-            pen = style.curve_pen(signal_index, source_index, n_signals, signal.color)
-            item = self._make_item(data, signal, name, pen)
-            self.curves.append(
-                Curve(signal, signal_index, source, source_index, data, name, item)
-            )
+        for entry in accepted:
+            self._add_curves(*entry, n_sources=len(sources_shown), n_signals=n_signals)
+        if len(sources_shown) > 1 and self._styled_sources:
+            # Colors tell the signals (or members) apart: say which line style is
+            # which source
+            for source_index, source in sources_shown:
+                proxy = pg.PlotDataItem(pen=style.source_pen(source_index))
+                self._legend_proxies.append(proxy)
+                self._legend_entries.append((proxy, source))
+        self._fill_legend()
+        if self._categories:
+            self._set_categories()
         if self.kind in ("map", "spacetime"):
             self._setup_images(shown_image)
         if self.kind in ("trace", "spacetime"):
@@ -380,7 +454,6 @@ class Panel(QtWidgets.QFrame):
             )
             self.plot.addItem(self._time_line, ignoreBounds=True)
         self.errors = errors
-        self.legend.setColumnCount(2 if len(self.legend.items) > 4 else 1)
         # An empty legend would still draw its (white) box
         self.legend.setVisible(self.config.legend and bool(self.legend.items))
         self._show_message()
@@ -393,11 +466,28 @@ class Panel(QtWidgets.QFrame):
         if self.config.kind != "auto":
             return self.config.kind
         for entry in loaded:
-            return _DATA_KIND_TO_PANEL[entry[4].kind]
+            data = entry[4]
+            if isinstance(data, Channels) and data.kind == TRACE:
+                # a value per element, e.g. per coil: bars, unless they are traces
+                return "trace" if data.is_time_dependent else "profile"
+            return _DATA_KIND_TO_PANEL[data.kind]
         return None
 
     def _incompatibility(self, data: SignalData) -> Optional[str]:
         kind = self.kind
+        if isinstance(data, Shapes):
+            if kind == "map":
+                return None
+            return (f"'{data.path.text}' is a shape in the (R, Z) plane and can only be "
+                    "shown in a map panel.")
+        if isinstance(data, Channels):
+            if kind == "profile" and data.kind == TRACE:
+                return None  # a bar per element, at the selected time
+            if kind == "map" and data.kind == PROFILE:
+                return None  # curves over the map
+            if kind == "spacetime":
+                return (f"'{data.path.text}' has wildcards and cannot be shown as a "
+                        "time-space image.")
         if kind == "spacetime":
             if not isinstance(data, ProfileSeries) or data.time is None:
                 return (f"'{data.path.text}' is not a time-dependent profile and cannot "
@@ -410,6 +500,67 @@ class Panel(QtWidgets.QFrame):
                     f"{kind} panel.")
         return None
 
+    def _add_curves(self, signal_index: int, signal: SignalConfig, source_index: int,
+                    source: str, data: SignalData, n_sources: int, n_signals: int) -> None:
+        """Create the curves (or bars, or shapes) of one signal of one source.
+
+        With several sources, curves take the color of their signal (or member) and
+        the line style of their source when that is enough to tell them apart; the
+        legend then has an entry per signal and one per source.
+        """
+        base = signal.label or data.path.label
+        suffix = f" [{source}]" if n_sources > 1 else ""
+        if isinstance(data, Channels) and data.kind == TRACE and self.kind == "profile":
+            label = source if n_signals == 1 and n_sources > 1 else base + suffix
+            self._add_bars(signal, signal_index, source, source_index, data,
+                           base + suffix, label)
+            return
+        styled = n_sources > 1 and (n_signals > 1 or isinstance(data, Channels))
+        self._styled_sources |= styled
+        if isinstance(data, Channels):
+            overlay = self.kind == "map"  # e.g. the parts of a wall: one pen
+            for k, (member, member_name) in enumerate(zip(data.members, data.names)):
+                name = member_name if n_signals == 1 else f"{member_name} {base}"
+                if overlay:
+                    pen = style.curve_pen(signal_index, source_index, n_signals,
+                                          signal.color)
+                    label = (base if styled else base + suffix) if k == 0 else None
+                else:
+                    key = (signal_index, member_name)
+                    color = self._member_colors.setdefault(key, len(self._member_colors))
+                    pen = style.member_pen(color, source_index, signal.color)
+                    label = name
+                item = self._make_item(member, signal, name + suffix, pen)
+                self._add_curve(Curve(signal, signal_index, source, source_index, member,
+                                      name + suffix, item, label))
+            return
+        pen = style.curve_pen(signal_index, source_index, n_signals, signal.color)
+        name = base + suffix
+        if isinstance(data, Shapes):
+            item = self._make_shape_item(data, pen, source_index)
+            if data.shape == GEOMETRY and signal_index not in self._named_signals:
+                self._named_signals.add(signal_index)
+                self._name_shapes(data)
+        else:
+            item = self._make_item(data, signal, name, pen)
+        self._add_curve(Curve(signal, signal_index, source, source_index, data, name,
+                              item, base if styled else name))
+
+    def _add_curve(self, curve: Curve) -> None:
+        self.curves.append(curve)
+        item = curve.item
+        if curve.label is None or item is None or isinstance(item, pg.InfiniteLine):
+            return
+        if all(label != curve.label for _, label in self._legend_entries):
+            self._legend_entries.append((item, curve.label))
+
+    def _fill_legend(self) -> None:
+        entries = self._legend_entries
+        self.legend.setColumnCount(1 if len(entries) <= 4 else 2 if len(entries) <= 12
+                                   else 3)
+        for item, label in entries:
+            self.legend.addItem(item, label)
+
     def _make_item(self, data: SignalData, signal: SignalConfig, name: str, pen):
         if self.kind == "trace":
             if data.time is None:  # constant: a horizontal line
@@ -420,22 +571,99 @@ class Panel(QtWidgets.QFrame):
                 )
                 self.plot.addItem(line)
                 return line
-            item = pg.PlotDataItem(
-                data.time, data.values * signal.scale + signal.offset, pen=pen, name=name
-            )
+            values = data.values * signal.scale + signal.offset
+            item = pg.PlotDataItem(data.time, values, pen=pen)
             # Add before enabling clipping: pyqtgraph needs the ViewBox for it
             self.plot.addItem(item)
             item.setDownsampling(auto=True, method="peak")
             item.setClipToView(True)
+            _mark_single_point(item, data.time, values)
             return item
         if isinstance(data, ProfileSeries) and self.kind in ("profile", "map"):
             if self.kind == "map":
                 pen.setWidthF(2.0)  # stand out on the image
-            item = pg.PlotDataItem(pen=pen, name=name)
+            item = pg.PlotDataItem(pen=pen)
             item.setZValue(20)
             self.plot.addItem(item)
             return item
         return None  # images are created in _setup_images
+
+    def _make_shape_item(self, data: Shapes, pen, source_index: int):
+        if data.shape == POINT:
+            symbol = style.SYMBOLS[source_index % len(style.SYMBOLS)]
+            item = pg.PlotDataItem(pen=None, symbol=symbol, symbolSize=10,
+                                   symbolPen=pg.mkPen(pen.color(), width=2),
+                                   symbolBrush=None)
+        elif data.shape == GEOMETRY:
+            fill = QtGui.QColor(pen.color())
+            fill.setAlpha(60)
+            item = pg.PlotDataItem(pen=pen, connect="finite", fillLevel="enclosed",
+                                   fillBrush=fill)
+        else:
+            pen.setWidthF(2.0)
+            item = pg.PlotDataItem(pen=pen, connect="finite")
+        item.setZValue(15)
+        self.plot.addItem(item)
+        return item
+
+    def _name_shapes(self, data: Shapes) -> None:
+        """Write the name of every shape (e.g. coil) on the map."""
+        groups: dict = {}
+        for outline, name in zip(data.slices[0] if data.slices else [], data.names):
+            if name and outline.size:
+                groups.setdefault(name.split("/")[0], []).append(outline)
+        if not groups or len(groups) > _MAX_SHAPE_LABELS:
+            return
+        font = QtGui.QFont()
+        font.setPointSize(_FONT_SIZE - 1)
+        for name, outlines in groups.items():
+            points = np.vstack(outlines)
+            center = np.nanmean(points, axis=0)
+            label = pg.TextItem(name, color="#303030", anchor=(0.5, 0.5))
+            label.setFont(font)
+            label.setPos(float(center[0]), float(center[1]))
+            label.setZValue(30)
+            self.plot.addItem(label, ignoreBounds=True)
+            self._shape_labels.append(label)
+
+    # -------------------------------------------------------------------- bars
+
+    def _add_bars(self, signal: SignalConfig, signal_index: int, source: str,
+                  source_index: int, data: Channels, name: str, label: str) -> None:
+        """Values of the members of a signal with wildcards (e.g. the current of
+        every coil) as bars, at the selected time."""
+        for member_name in data.names:
+            if member_name not in self._categories:
+                self._categories.append(member_name)
+        color = signal.color or style.PALETTE[len(self._bars) % len(style.PALETTE)]
+        item = pg.BarGraphItem(x=[0.0], height=[0.0], width=0.8, brush=color,
+                               pen=pg.mkPen(QtGui.QColor(color).darker(140)))
+        item.setVisible(False)  # until the first set_time
+        self.plot.addItem(item)
+        curve = Curve(signal, signal_index, source, source_index, data, name, item, label)
+        self._bars.append(curve)
+        self._add_curve(curve)
+
+    def _set_categories(self) -> None:
+        """Name the bars on the x axis (some of them when there are many)."""
+        step = int(np.ceil(len(self._categories) / _MAX_CATEGORY_LABELS))
+        ticks = [(float(i), name) for i, name in enumerate(self._categories)]
+        self.plot.getAxis("bottom").setTicks([ticks[::step]])
+
+    def _update_bars(self, t: Optional[float]) -> List[Tuple[Curve, Optional[float]]]:
+        """Heights of the bars at time t; returns the time of the values shown."""
+        shown = []
+        width = 0.8 / max(len(self._bars), 1)
+        for group, curve in enumerate(self._bars):
+            values, t_slice = curve.data.values_at(t)
+            offset = (group - (len(self._bars) - 1) / 2) * width
+            x = np.array([self._categories.index(n) for n in curve.data.names], float)
+            heights = curve.scaled(values)
+            valid = np.isfinite(heights)
+            curve.item.setOpts(x=x[valid] + offset, height=heights[valid], width=width)
+            curve.item.setVisible(bool(valid.any()))
+            shown.append((curve, t_slice))
+        return shown
 
     # ------------------------------------------------------------------ images
 
@@ -601,8 +829,17 @@ class Panel(QtWidgets.QFrame):
         for curve in self.curves:
             if isinstance(curve.data, ProfileSeries) and curve.item is not None:
                 x, y, t_slice = curve.data.at(t)
-                curve.item.setData(x, curve.scaled(y))
+                y = curve.scaled(y)
+                curve.item.setData(x, y)
+                _mark_single_point(curve.item, x, y)
                 shown.append((curve, t_slice))
+            elif isinstance(curve.data, Shapes):
+                outlines, t_slice = curve.data.at(t)
+                x, y = _joined(outlines, curve.data.shape != POINT)
+                curve.item.setData(x, y)
+                if curve.data.is_time_dependent:
+                    shown.append((curve, t_slice))
+        shown += self._update_bars(t)
         if self.kind == "map":
             self._draw_map()
         # The time of the slices is shown once in the title when it is the same for
@@ -617,7 +854,9 @@ class Panel(QtWidgets.QFrame):
         self._update_title()
 
     def _set_legend_text(self, curve: Curve, t_slice: Optional[float]) -> None:
-        text = curve.name if t_slice is None else f"{curve.name}  @ {t_slice:.4g} s"
+        if curve.label is None:
+            return
+        text = curve.label if t_slice is None else f"{curve.label}  @ {t_slice:.4g} s"
         for sample, label in self.legend.items:
             if sample.item is curve.item:
                 label.setText(text)
@@ -630,6 +869,9 @@ class Panel(QtWidgets.QFrame):
         """
         slices, traces = [], []
         for curve in self.curves:
+            if isinstance(curve.data, Channels):  # bars: stepped through like slices
+                slices += [m.time for m in curve.data.members if m.time is not None]
+                continue
             time = curve.data.time
             if time is None:
                 continue
@@ -641,7 +883,7 @@ class Panel(QtWidgets.QFrame):
         result = []
         for curve in self.curves:
             data = curve.data
-            if data.kind != TRACE:
+            if data.kind != TRACE or isinstance(data, Channels):
                 continue
             if data.time is None:
                 value = float(data.values)
@@ -672,10 +914,14 @@ class Panel(QtWidgets.QFrame):
             data = curves[0].data
             if self.kind == "trace":
                 x_title = "time [s]"
+            elif self.kind == "profile" and self._bars:
+                x_title = self._bars[0].data.axis_label
             elif self.kind == "profile":
                 x_title = data.x_axis.title()
-            elif self.kind == "map":
+            elif self.kind == "map" and hasattr(data, "x2_axis"):
                 x_title, y_title = data.x_axis.title(), data.x2_axis.title()
+            elif self.kind == "map":  # only curves over an empty map
+                x_title, y_title = data.x_axis.title(), data.value_axis.title()
             elif self.kind == "spacetime":
                 x_title, y_title = "time [s]", data.x_axis.title()
             if self.kind in ("trace", "profile"):

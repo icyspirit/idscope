@@ -1,6 +1,6 @@
 import pytest
 
-from idscope.data.paths import ALL, parse_alternatives, parse_signal_path
+from idscope.data.paths import ALL, Range, parse_alternatives, parse_signal_path
 from idscope.errors import PathError
 
 
@@ -57,7 +57,7 @@ def test_occurrence_and_python_indices():
     assert path.occurrence == 2
     assert path.indices == (ALL, 1, None)
     assert path.text == "equilibrium:2/time_slice[:]/profiles_2d[1]/psi"
-    assert path.canonical() == "equilibrium:2/time_slice[:]/profiles_2d[1]/psi"
+    assert path.canonical() == "equilibrium:2/time_slice[*]/profiles_2d[1]/psi"
     assert path.label == "profiles_2d[1]/psi"
 
 
@@ -66,29 +66,53 @@ def test_fortran_indices_are_one_based():
     assert path.indices == (3, None, None)
     assert path.canonical() == "magnetics/flux_loop[3]/flux/data"
     assert path.label == "flux_loop[3]/flux/data"
-    assert parse_signal_path("core_profiles/profiles_1d(itime)/zeff").indices[0] is ALL
-    assert parse_signal_path("core_profiles/profiles_1d(:)/zeff").indices[0] is ALL
+    # (itime) stands for the time axis, as in the Data Dictionary documentation
+    assert parse_signal_path("core_profiles/profiles_1d(itime)/zeff").indices[0] is None
+    assert parse_signal_path("core_profiles/profiles_1d(:)/zeff").indices[0] == ALL
+    # Fortran ranges include both ends
+    assert parse_signal_path("pf_active/coil(1:6)/current/data").indices[0] == Range(0, 6)
 
 
 def test_dot_separators():
     path = parse_signal_path("core_profiles.profiles_1d[:].electrons.temperature[0]")
     assert path.parts == ("profiles_1d", "electrons", "temperature")
-    assert path.indices == (ALL, None, 0)
+    assert path.indices == (ALL, None, None)
+    assert path.data_index == (0,)
+
+
+def test_wildcards_ranges_and_numpy_index():
+    path = parse_signal_path("pf_active/coil[*]/current/data[:, 0]")
+    assert path.indices == (ALL, None, None)
+    assert path.data_index == (ALL, 0)
+    assert path.canonical() == "pf_active/coil[*]/current/data[:, 0]"
+    assert path.label == "current/data[:, 0]"
+    path = parse_signal_path("pf_active.coil[-1].current.data[0:10:2]")
+    assert path.indices == (-1, None, None)
+    assert path.data_index == (Range(0, 10, 2),)
+    assert path.canonical() == "pf_active/coil[-1]/current/data[0:10:2]"
+    assert parse_signal_path("pf_active/coil[6:]/current/data").indices[0] == Range(6)
+    path = parse_signal_path("equilibrium/time_slice/boundary/x_point[*]")
+    assert path.indices == (None, None, None) and path.data_index == (ALL,)
 
 
 @pytest.mark.parametrize(
-    "text",
+    "text, message",
     [
-        "",
-        "core_profiles",
-        "Core_profiles/time",
-        "core_profiles/profiles_1d[1:3]/zeff",
-        "core_profiles/profiles_1d(0)/zeff",
-        "core_profiles/profiles_1d(i1)/zeff",
-        "core_profiles/profiles_1d[0]/ion(1)/temperature",
-        "core_profiles profiles_1d",
+        ("", "expected 'ids_name/path/to/quantity'"),
+        ("core_profiles", "only names the IDS"),
+        ("Core_profiles/time", "expected"),
+        ("core_profiles/profiles_1d(0)/zeff", "start at 1"),
+        ("core_profiles/profiles_1d[0]/ion(1)/temperature", "cannot be mixed"),
+        ("core_profiles profiles_1d", "expected"),
+        ("pf_active/coil[1, 2]/current/data", "takes one index"),
+        ("pf_active/coil[a]/current/data", "expected a number"),
+        ("pf_active/coil[1:2:0]/current/data", "the step is 0"),
+        ("pf_active/coil[]/current/data", "Empty index"),
+        ("pf_active/coil(1]/current/data", "unbalanced"),
+        ("pf_active/coil[0]/current/data[itime, 0]", "placeholders"),
+        ("pf_active/coil[0]/current/data]", "unexpected"),
     ],
 )
-def test_invalid_paths(text):
-    with pytest.raises(PathError):
+def test_invalid_paths(text, message):
+    with pytest.raises(PathError, match=message):
         parse_signal_path(text)

@@ -2,12 +2,14 @@ import numpy as np
 import pytest
 
 from idscope.data import (
+    Channels,
     MapSeries,
     ProfileSeries,
+    Shapes,
     Trace,
     parse_signal_path,
 )
-from idscope.data.extract import normalize
+from idscope.data.extract import geometry_outline, normalize
 from idscope.data.sources import DataSource, parse_source
 from idscope.errors import NoDataError, PathError
 
@@ -167,7 +169,7 @@ def test_path_errors(source_a, text, message):
     [
         ("magnetics/flux_loop[5]/flux/data", "out of range"),
         ("core_profiles/profiles_1d/electrons/pressure", "not filled"),
-        ("pf_active/coil[0]/current/data", "pf_active"),
+        ("interferometer/channel[0]/n_e_line/data", "interferometer"),
     ],
 )
 def test_no_data_errors(source_a, text, message):
@@ -201,3 +203,145 @@ def test_other_major_dd_version(dd3_file):
             assert y[0] == 0.0 and y[-1] == 1.0 and np.all(np.diff(y) > 0)
     finally:
         source.close()
+
+
+PF_FLAT_TOP = [-6e3, -9e3, -12e3, -12e3, -9e3, -6e3, -4e3, -6e3, 8e3, 8e3, -6e3, -4e3]
+COILS = ["CS3U", "CS2U", "CS1U", "CS1L", "CS2L", "CS3L",
+         "PF1", "PF2", "PF3", "PF4", "PF5", "PF6"]
+
+
+def test_wildcard_traces(source_a):
+    currents = get(source_a, "pf_active/coil[*]/current/data")
+    assert isinstance(currents, Channels) and currents.kind == "trace"
+    assert currents.names == COILS
+    assert currents.axis_label == "coil"
+    assert all(member.time.shape == (41,) for member in currents.members)
+    values, t = currents.values_at(5.1)
+    assert t == pytest.approx(5.0)
+    np.testing.assert_allclose(values, PF_FLAT_TOP)
+    assert get(source_a, "pf_active/coil[6:]/current/data").names == COILS[6:]
+    assert get(source_a, "pf_active/coil(7:12)/current/data").names == COILS[6:]
+
+
+def test_numpy_index_after_wildcards(source_a):
+    # the first index is for the wildcard (coils), the second for the data (time)
+    first = get(source_a, "pf_active/coil[*]/current/data[:, 0]")
+    assert isinstance(first, Channels)
+    assert all(member.time is None for member in first.members)
+    assert first.members[0].fixed_time == 0.0
+    np.testing.assert_allclose(
+        [float(m.values) for m in first.members[:3]], [12e3, 15e3, 18e3]
+    )
+    last_coil = get(source_a, "pf_active/coil[*]/current/data[-1]")
+    assert isinstance(last_coil, Trace) and last_coil.values[-1] == pytest.approx(-4e3)
+    with pytest.raises(PathError, match="3 indices on its last node, for 1 wildcard"):
+        get(source_a, "pf_active/coil[*]/current/data[:, 0, 1]")
+    with pytest.raises(PathError, match="or 'coil\\[\\*\\]' for all of them"):
+        get(source_a, "pf_active/coil/current/data")
+    with pytest.raises(NoDataError, match="Index 20 is out of range for 'coil'"):
+        get(source_a, "pf_active/coil[*]/current/data[20]")
+
+
+def test_wildcards_below_the_time_axis(source_a):
+    ions = get(source_a, "core_profiles/profiles_1d/ion[*]/temperature")
+    assert isinstance(ions, Channels) and ions.kind == "profile"
+    assert ions.names == ["D", "C"]
+    # the second species is missing in the last three time slices
+    assert [len(y) for y in ions.members[1].ys[-4:]] == [51, 0, 0, 0]
+    central = get(source_a, "core_profiles/profiles_1d/ion[*]/temperature[:, 0]")
+    assert central.kind == "trace" and central.members[0].values.shape == (41,)
+    psi_n = get(source_a, "core_profiles/profiles_1d/ion[*]/temperature",
+                x="norm(core_profiles/profiles_1d/grid/psi)")
+    assert isinstance(psi_n, Channels) and psi_n.x_axis.title() == "psi_n"
+
+
+def test_time_wildcard_ranges_and_cuts(source_a):
+    te0 = get(source_a, "core_profiles/profiles_1d[*]/electrons/temperature[:, 0]")
+    assert isinstance(te0, Trace) and te0.values.shape == (41,)
+    last = get(source_a, "core_profiles/profiles_1d[*]/electrons/temperature[-1]")
+    assert last.time is None and last.fixed_time == pytest.approx(10.0)
+    some = get(source_a, "core_profiles/profiles_1d[0:10]/electrons/temperature")
+    np.testing.assert_allclose(some.time, TIME[:10])
+    cut = get(source_a, "equilibrium/time_slice/profiles_2d[0]/psi[:, 40]")  # Z = 0
+    assert isinstance(cut, ProfileSeries) and cut.x_axis.label == "grid/dim1"
+    r, psi, _ = cut.at(5.0)
+    assert r.shape == psi.shape == (45,)
+    assert np.argmin(psi) == np.argmin(np.abs(r - (1.8 + 0.03 * np.sin(5.0))))
+
+
+def test_shapes(source_a):
+    coils = get(source_a, "pf_active/coil[*]/element[*]/geometry")
+    assert isinstance(coils, Shapes) and coils.shape == "geometry"
+    assert coils.time is None and coils.names == COILS
+    outlines, _ = coils.at(3.0)
+    np.testing.assert_allclose(  # PF1, a rectangle, closed
+        outlines[6], [[1.1, 1.45], [1.4, 1.45], [1.4, 1.75], [1.1, 1.75], [1.1, 1.45]]
+    )
+    np.testing.assert_allclose(outlines[0][[0, -1]], [[0.65, 1.0], [0.65, 1.0]])  # outline
+    wall = get(source_a, "wall/description_2d[0]/limiter/unit[*]/outline")
+    assert wall.shape == "outline" and wall.names == ["first wall"]
+    points = wall.at(None)[0][0]
+    assert len(points) == 121  # closed: its ends are one segment apart
+    boundary = get(source_a, "equilibrium/time_slice/boundary/outline")
+    assert boundary.is_time_dependent and len(boundary.slices) == 41
+    axis = get(source_a, "equilibrium/time_slice/global_quantities/magnetic_axis")
+    (point,), t = axis.at(5.0)
+    assert axis.shape == "point" and t == pytest.approx(5.0)
+    np.testing.assert_allclose(point, [[1.82 + 0.03 * np.sin(5.0), 0.01 * np.sin(10.0)]])
+    with pytest.raises(PathError, match="is a structure; continue the path"):
+        get(source_a, "equilibrium/time_slice/boundary")
+    parts = get(source_a, "wall/description_2d[0]/limiter/unit[*]/outline/z",
+                x="wall/description_2d[0]/limiter/unit[*]/outline/r")
+    assert isinstance(parts, Channels) and parts.x_axis.label == "r"
+
+
+def test_geometry_types():
+    import imas
+
+    coil = imas.IDSFactory().pf_active().coil
+    coil.resize(1)
+    coil[0].element.resize(1)
+    geometry = coil[0].element[0].geometry
+    assert geometry_outline(geometry) is None  # nothing filled
+    geometry.rectangle.r, geometry.rectangle.z = 2.0, 0.0
+    geometry.rectangle.width, geometry.rectangle.height = 0.2, 0.4
+    # without geometry_type, whatever is filled
+    np.testing.assert_allclose(geometry_outline(geometry)[:4],
+                               [[1.9, -0.2], [2.1, -0.2], [2.1, 0.2], [1.9, 0.2]])
+    geometry.geometry_type = 3
+    oblique = geometry.oblique
+    oblique.r, oblique.z, oblique.length_alpha, oblique.length_beta = 1.0, 0.0, 0.2, 0.1
+    oblique.alpha, oblique.beta = 0.0, np.pi / 4
+    shift = 0.1 * np.sqrt(0.5)
+    np.testing.assert_allclose(geometry_outline(geometry)[:4], [
+        [1.0, 0.0], [1.2, 0.0], [1.2 - shift, shift], [1.0 - shift, shift],
+    ], atol=1e-12)
+    geometry.geometry_type = 5
+    geometry.annulus.r, geometry.annulus.z = 2.0, 0.0
+    geometry.annulus.radius_inner, geometry.annulus.radius_outer = 0.1, 0.2
+    ring = geometry_outline(geometry)
+    gap = np.flatnonzero(np.isnan(ring[:, 0]))
+    assert len(gap) == 1
+    radii = np.hypot(ring[:, 0] - 2.0, ring[:, 1])
+    np.testing.assert_allclose(radii[: gap[0]], 0.2)
+    np.testing.assert_allclose(radii[gap[0] + 1:], 0.1)
+    geometry.geometry_type = 6
+    line = geometry.thick_line
+    line.first_point.r, line.first_point.z = 1.0, 0.0
+    line.second_point.r, line.second_point.z = 1.0, 1.0
+    line.thickness = 0.2
+    np.testing.assert_allclose(geometry_outline(geometry)[:4],
+                               [[0.9, 0.0], [0.9, 1.0], [1.1, 1.0], [1.1, 0.0]])
+    geometry.geometry_type = 4
+    arcs = geometry.arcs_of_circle
+    arcs.r, arcs.z = [1.0, 2.0, 2.0, 1.0], [0.0, 0.0, 1.0, 1.0]
+    arcs.curvature_radii = [0.0, 0.0, 0.0, 0.0]
+    np.testing.assert_allclose(geometry_outline(geometry),
+                               [[1, 0], [2, 0], [2, 1], [1, 1], [1, 0]])
+    arcs.curvature_radii = [1.0, 0.0, 0.0, 0.0]  # the bottom side bends
+    bottom = geometry_outline(geometry)[:16]
+    assert np.all(bottom[1:, 1] < 0)
+    np.testing.assert_allclose(np.hypot(bottom[:, 0] - 1.5, bottom[:, 1] - np.sqrt(0.75)),
+                               1.0)
+    arcs.curvature_radii = [-1.0, 0.0, 0.0, 0.0]  # into the square
+    assert np.all(geometry_outline(geometry)[1:16, 1] > 0)

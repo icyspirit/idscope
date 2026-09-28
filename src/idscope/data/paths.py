@@ -7,21 +7,32 @@ A signal path points at one quantity in an IDS, for example::
     magnetics/flux_loop[3]/flux/data
     magnetics/flux_loop(4)/flux/data
     core_profiles/profiles_1d/electrons/temperature[0]
-    core_profiles.profiles_1d[:].electrons.temperature
+    pf_active/coil[*]/current/data
+    pf_active/coil[*]/current/data[:, 0]
+    pf_active/coil[0:6]/element[*]/geometry
 
 Rules:
 
 - The first element is the IDS name, optionally followed by ``:occurrence``.
 - Nodes are separated by ``/`` or ``.``.
-- Indices are written Python style ``[i]`` (0-based) or Fortran style ``(i)``
-  (1-based), as in the Data Dictionary documentation. The two styles cannot be
-  mixed in one path.
-- A time-dependent array of structures (``profiles_1d``, ``time_slice``, ...) can be
-  left without index, or written as ``[:]``, ``(:)`` or ``(itime)``. It then becomes
-  the time axis of the signal. Whether an array of structures is time-dependent is
-  only known from the Data Dictionary, so it is checked during extraction.
-- An index on the last (data) node selects along the first dimension of the data,
-  e.g. ``temperature[0]`` is the value on the first radial grid point.
+- Indices are written Python style ``[i]`` (0-based, negative from the end) or
+  Fortran style ``(i)`` (1-based), as in the Data Dictionary documentation. The two
+  styles cannot be mixed in one path.
+- An index is a number, ``*`` or ``:`` (all elements), or a range ``a:b`` or
+  ``a:b:step`` (Fortran ranges include both ends: ``(1:6)`` is ``[0:6]``).
+- The time-dependent array of structures (``profiles_1d``, ``time_slice``, ...) can
+  be left without index, or written ``(itime)`` as in the Data Dictionary: it is the
+  time axis of the signal. A number selects one time slice, a range some of them.
+  Whether an array of structures depends on time is only known from the Data
+  Dictionary, so it is checked during extraction.
+- Other arrays of structures need an index. ``*``, ``:`` or a range is a wildcard:
+  the signal then has a member per element, e.g. one time trace per coil for
+  ``pf_active/coil[*]/current/data``.
+- The index on the last node selects numpy style along all dimensions of the
+  result: first one per wildcard (in the order of the path, the time array of
+  structures included when it has one), then those of the data node.
+  ``temperature[0]`` is the value on the first radial grid point, and
+  ``pf_active/coil[*]/current/data[:, 0]`` the first current sample of every coil.
 - ``norm(path)`` normalizes every profile between its first and last point,
   ``(y - y[0]) / (y[-1] - y[0])``: ``norm(equilibrium/time_slice/profiles_1d/psi)``
   is the normalized poloidal flux psi_n, since the profiles go from the magnetic
@@ -31,39 +42,44 @@ Rules:
 import dataclasses
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
-
-from imas.ids_path import IDSPath
+from typing import List, NamedTuple, Optional, Tuple, Union
 
 from idscope.errors import PathError
 
 
-class _AllType:
-    """Sentinel for an index that selects all elements (``[:]`` or ``(itime)``)."""
+class Range(NamedTuple):
+    """Several elements, as a Python slice ``[start:stop:step]``."""
 
-    _instance = None
+    start: Optional[int] = None
+    stop: Optional[int] = None
+    step: Optional[int] = None
 
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+    def as_slice(self) -> slice:
+        return slice(self.start, self.stop, self.step)
 
-    def __repr__(self) -> str:
-        return "ALL"
-
-    def __reduce__(self):
-        return (_AllType, ())
+    def __str__(self) -> str:
+        text = ":".join("" if v is None else str(v) for v in (self.start, self.stop))
+        return text if self.step is None else f"{text}:{self.step}"
 
 
-ALL = _AllType()
-"""Index value for ``[:]``, ``(:)`` or ``(itime)``."""
+ALL = Range()
+"""All elements: ``[*]``, ``[:]`` or ``(:)``."""
 
-Index = Union[None, int, _AllType]
+Selector = Union[int, Range]
+Index = Optional[Selector]
+"""Index of a node: ``None`` (no index), a 0-based int or a :class:`Range`."""
 
 _HEAD = re.compile(
     r"#?(?P<ids>[a-z][a-z0-9_]*)(?::(?P<occ>\d+))?(?:(?P<sep>[/.])(?P<rest>.*))?",
     re.ASCII | re.DOTALL,
 )
+_NODE = re.compile(
+    r"\s*(?P<name>[a-z][a-z0-9_]*)\s*(?:(?P<open>[\[(])(?P<index>[^\[\]()]*)"
+    r"(?P<close>[\])]))?\s*",
+    re.ASCII,
+)
+_GENERIC = re.compile(r"itime|i\d", re.ASCII)
+"""Placeholders of the Data Dictionary documentation, e.g. ``profiles_1d(itime)``."""
 _FUNCTION = re.compile(r"(?P<function>[a-z]+)\s*\((?P<inner>.*)\)", re.ASCII | re.DOTALL)
 
 TRANSFORMS = ("norm",)
@@ -81,7 +97,11 @@ class SignalPath:
     parts: Tuple[str, ...]
     """Node names below the IDS toplevel."""
     indices: Tuple[Index, ...]
-    """Index of every node in :attr:`parts` (0-based int, ``ALL`` or ``None``)."""
+    """Index of every node in :attr:`parts` (``None`` for the last one, whose index
+    is :attr:`data_index`)."""
+    data_index: Tuple[Selector, ...] = ()
+    """Index written on the last node, numpy style: one selector per wildcard, then
+    per dimension of the data."""
     transform: Optional[str] = None
     """Function applied to the data, e.g. ``norm``."""
 
@@ -95,7 +115,7 @@ class SignalPath:
         head = self.ids_name
         if self.occurrence:
             head += f":{self.occurrence}"
-        path = "/".join([head] + _format_parts(self.parts, self.indices))
+        path = "/".join([head] + self._formatted())
         return f"{self.transform}({path})" if self.transform else path
 
     @property
@@ -112,27 +132,29 @@ class SignalPath:
         """
         if self.transform:
             return self.name
-        formatted = _format_parts(self.parts, self.indices)
+        formatted = self._formatted()
         start = max(len(formatted) - 2, 0)
         for pos, index in enumerate(self.indices):
             if isinstance(index, int):
                 start = min(start, pos)
         return "/".join(formatted[start:])
 
+    def _formatted(self) -> List[str]:
+        formatted = [
+            part if index is None
+            else f"{part}[{'*' if index == ALL else _format_selector(index)}]"
+            for part, index in zip(self.parts, self.indices)
+        ]
+        if self.data_index:
+            formatted[-1] += f"[{', '.join(map(_format_selector, self.data_index))}]"
+        return formatted
+
     def __str__(self) -> str:
         return self.text
 
 
-def _format_parts(parts, indices):
-    formatted = []
-    for part, index in zip(parts, indices):
-        if index is ALL:
-            formatted.append(f"{part}[:]")
-        elif isinstance(index, int):
-            formatted.append(f"{part}[{index}]")
-        else:
-            formatted.append(part)
-    return formatted
+def _format_selector(selector: Selector) -> str:
+    return str(selector) if isinstance(selector, Range) else str(int(selector))
 
 
 ALTERNATIVE_SEPARATOR = "|"
@@ -192,35 +214,109 @@ def parse_signal_path(text: str) -> SignalPath:
             f"Signal path '{text}' only names the IDS '{ids_name}'; add the path "
             "to a quantity, for example 'equilibrium/time_slice/global_quantities/ip'."
         )
-    # Node names never contain dots, so dots can safely be used as separators.
-    rest = rest.replace(".", "/")
-    try:
-        ids_path = IDSPath(rest)
-    except ValueError as exc:
-        raise PathError(f"Invalid signal path '{text}': {exc}") from None
+    parts, indices, data_index = _parse_nodes(rest, stripped)
+    return SignalPath(stripped, ids_name, occurrence, parts, indices, data_index)
 
-    indices = []
-    for part, index in ids_path.items():
-        if isinstance(index, int) and index < 0:
+
+def _parse_nodes(rest: str, text: str):
+    """Node names, their indices and the index of the last node."""
+    parts: List[str] = []
+    selectors: List[List[Index]] = []
+    style = None
+    pos = 0
+    while True:
+        match = _NODE.match(rest, pos)
+        if match is None or match.end() == pos:
             raise PathError(
-                f"Invalid index for '{part}' in '{text}': Fortran-style indices "
-                "such as '(1)' start at 1."
+                f"Invalid signal path '{text}': cannot read a node name at "
+                f"'{rest[pos:]}'."
             )
-        if index is None or isinstance(index, int):
-            indices.append(index)
-        elif isinstance(index, slice):
-            if index.start is None and index.stop is None:
-                indices.append(ALL)
-            else:
+        name = match["name"]
+        if match["open"]:
+            node_style = "fortran" if match["open"] == "(" else "python"
+            if match["close"] != {"fortran": ")", "python": "]"}[node_style]:
+                raise PathError(f"Invalid signal path '{text}': unbalanced brackets.")
+            if style is not None and style != node_style:
                 raise PathError(
-                    f"Invalid index for '{part}' in '{text}': only single indices "
-                    "or ':' (all elements) are supported."
+                    f"Invalid signal path '{text}': Fortran-style (1-based) and "
+                    "Python-style (0-based) indices cannot be mixed."
                 )
-        elif index == "itime":
-            indices.append(ALL)
+            style = node_style
+            where = f"'{name}' in '{text}'"
+            selectors.append([
+                _parse_selector(item, node_style == "fortran", where)
+                for item in match["index"].split(",")
+            ])
         else:
+            selectors.append([])
+        parts.append(name)
+        pos = match.end()
+        if pos == len(rest):
+            break
+        if rest[pos] not in "/.":
             raise PathError(
-                f"Invalid index '{index}' for '{part}' in '{text}': use an explicit "
-                f"index, for example '{part}[0]' or '{part}(1)'."
+                f"Invalid signal path '{text}': unexpected '{rest[pos]}' after "
+                f"'{name}'."
             )
-    return SignalPath(stripped, ids_name, occurrence, ids_path.parts, tuple(indices))
+        pos += 1
+    indices: List[Index] = []
+    for name, given in zip(parts[:-1], selectors[:-1]):
+        if len(given) > 1:
+            raise PathError(
+                f"Invalid index for '{name}' in '{text}': an array of structures "
+                "takes one index; only the last node takes several."
+            )
+        indices.append(given[0] if given else None)
+    indices.append(None)
+    last = selectors[-1]
+    if last and last[0] is None and len(last) == 1:
+        # e.g. "profiles_1d(itime)" at the end: the path does not reach a quantity,
+        # which extraction reports
+        last = [None]
+    if any(selector is None for selector in last) and len(last) > 1:
+        raise PathError(
+            f"Invalid index for '{parts[-1]}' in '{text}': placeholders such as "
+            "'itime' only stand for the time array of structures."
+        )
+    data_index = tuple(s for s in last if s is not None)
+    return tuple(parts), tuple(indices), data_index
+
+
+def _parse_selector(text: str, fortran: bool, where: str) -> Index:
+    item = text.strip()
+    if not item:
+        raise PathError(f"Empty index for {where}.")
+    if item in ("*", ":"):
+        return ALL
+    if _GENERIC.fullmatch(item):
+        return None
+    if ":" in item:
+        pieces = item.split(":")
+        if len(pieces) > 3:
+            raise PathError(f"Invalid range '{item}' for {where}.")
+        numbers = [_number(p, fortran, where) if p.strip() else None for p in pieces]
+        start, stop = numbers[0], numbers[1]
+        step = numbers[2] if len(numbers) == 3 else None
+        if step == 0:
+            raise PathError(f"Invalid range '{item}' for {where}: the step is 0.")
+        if fortran and start is not None:
+            start -= 1  # 1-based, both ends included: (2:3) is [1:3]
+        return Range(start, stop, step)
+    number = _number(item, fortran, where)
+    return number - 1 if fortran else number
+
+
+def _number(text: str, fortran: bool, where: str) -> int:
+    try:
+        number = int(text.strip())
+    except ValueError:
+        raise PathError(
+            f"Invalid index '{text.strip()}' for {where}: expected a number, '*', ':' "
+            "or a range such as '0:6'."
+        ) from None
+    if fortran and number < 1:
+        raise PathError(
+            f"Invalid index for {where}: Fortran-style indices such as '(1)' start "
+            "at 1."
+        )
+    return number

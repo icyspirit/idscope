@@ -6,7 +6,7 @@ pytest.importorskip("pyqtgraph.Qt")
 import pyqtgraph as pg  # noqa: E402
 from pyqtgraph.Qt import QtCore, QtGui  # noqa: E402
 
-from idscope.config import load_config  # noqa: E402
+from idscope.config import SignalConfig, load_config  # noqa: E402
 from idscope.demo import DEMO_CONFIG  # noqa: E402
 from idscope.errors import IdscopeError  # noqa: E402
 from idscope.gui.panel import MIME_SIGNAL  # noqa: E402
@@ -272,4 +272,41 @@ def test_slice_time_in_title_or_legend(window):
     # a fixed time slice next to the time-dependent profile: the times differ
     te.add_signal("core_profiles/profiles_1d[4]/electrons/temperature")
     assert te.title_item.textItem.toPlainText() == "Electron temperature"
-    assert all("@" in label.text for _, label in te.legend.items)
+    # an entry per signal (with its time), and one per source (its line style)
+    labels = [label.text for _, label in te.legend.items]
+    assert labels[2:] == ["A", "B"]
+    assert all("@" in label for label in labels[:2])
+
+
+def test_wildcards_in_panels(window):
+    window.change_layout(window.panels[2], "add_below")
+    panel = window.current_panel
+    panel.add_signal("magnetics/flux_loop[*]/flux/data")
+    assert panel.kind == "trace"
+    assert [c.name for c in panel.curves] == [f"FL{k} [{s}]" for s in "AB" for k in (1, 2, 3)]
+    # a color per flux loop, a line style per source
+    assert [label.text for _, label in panel.legend.items] == ["FL1", "FL2", "FL3", "A", "B"]
+    pens = [c.item.opts["pen"] for c in panel.curves]
+    assert pens[0].color() == pens[3].color() != pens[1].color()
+    assert pens[0].style() != pens[3].style()
+
+    # a value per flux loop: bars, per loop and source
+    panel.config.signals = [SignalConfig("magnetics/flux_loop[*]/flux/data[:, -1]")]
+    window.refresh_panel(panel)
+    assert panel.kind == "profile" and len(panel._bars) == 2
+    ticks = panel.plot.getAxis("bottom")._tickLevels
+    assert [name for _, name in ticks[0]] == ["FL1", "FL2", "FL3"]
+    assert panel.plot.getAxis("bottom").labelText == "flux_loop"
+    np.testing.assert_allclose(panel._bars[0].item.opts["height"], [0.1, 0.2, 0.3],
+                               atol=0.003)
+    assert [label.text for _, label in panel.legend.items] == ["A", "B"]
+
+    # time-dependent values follow the time
+    panel.config.signals = [SignalConfig("pf_active/coil[*]/current/data", scale=1e-3)]
+    panel.config.kind = "profile"
+    window.refresh_panel(panel)
+    window.set_time(0.0)
+    np.testing.assert_allclose(panel._bars[0].item.opts["height"][:3], [12, 15, 18])
+    window.set_time(5.0)
+    np.testing.assert_allclose(panel._bars[0].item.opts["height"][:3], [-6, -9, -12])
+    assert panel.title_item.textItem.toPlainText() == "t = 5 s"

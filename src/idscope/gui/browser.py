@@ -14,7 +14,8 @@ from idscope.gui.panel import MIME_SIGNAL
 logger = logging.getLogger(__name__)
 
 _PATH_ROLE = QtCore.Qt.ItemDataRole.UserRole
-_KIND_COLORS = {"trace": "#1f77b4", "profile": "#2ca02c", "map": "#9467bd"}
+_KIND_COLORS = {"trace": "#1f77b4", "profile": "#2ca02c", "map": "#9467bd",
+                "shape": "#8c564b"}
 
 
 class _SignalTree(QtWidgets.QTreeWidget):
@@ -164,7 +165,14 @@ class BrowserWidget(QtWidgets.QWidget):
                     node.setFlags(node.flags() & ~QtCore.Qt.ItemFlag.ItemIsDragEnabled)
                     nodes[key] = node
                 parent = node
-            leaf = QtWidgets.QTreeWidgetItem(parent, [parts[-1], item.kind, item.units])
+            # A shape (e.g. a coil geometry) is also the parent of its quantities
+            leaf = nodes.get(item.dd_path)
+            if leaf is None:
+                leaf = QtWidgets.QTreeWidgetItem(parent, [parts[-1]])
+                nodes[item.dd_path] = leaf
+            leaf.setText(1, item.kind)
+            leaf.setText(2, item.units)
+            leaf.setFlags(leaf.flags() | QtCore.Qt.ItemFlag.ItemIsDragEnabled)
             leaf.setData(0, _PATH_ROLE, item.signal_path)
             doc = item.documentation
             leaf.setToolTip(0, f"{item.signal_path}\n\n{doc}" if doc else item.signal_path)
@@ -178,12 +186,11 @@ class BrowserWidget(QtWidgets.QWidget):
 
         def visit(node: QtWidgets.QTreeWidgetItem, prefix: str) -> bool:
             path = f"{prefix}/{node.text(0)}" if prefix else node.text(0)
-            if node.childCount() == 0:
-                visible = not text or text in path.lower()
-            else:
-                visible = False
-                for i in range(node.childCount()):
-                    visible |= visit(node.child(i), path)
+            visible = not text or (
+                bool(node.data(0, _PATH_ROLE)) and text in path.lower()
+            )
+            for i in range(node.childCount()):
+                visible |= visit(node.child(i), path)
             node.setHidden(not visible)
             if text and node.childCount():
                 node.setExpanded(visible)

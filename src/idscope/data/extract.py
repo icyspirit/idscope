@@ -11,24 +11,30 @@ kind                      examples
                           ``magnetics/flux_loop[0]/flux/data``
 ``profile`` (y vs x)      ``core_profiles/profiles_1d/electrons/temperature``
 ``map``    (z vs x1, x2)  ``equilibrium/time_slice/profiles_2d[0]/psi``
+``shape``  (in R, Z)      ``pf_active/coil[*]/element[*]/geometry``,
+                          ``wall/description_2d[0]/limiter/unit[*]/outline``,
+                          ``equilibrium/time_slice/boundary/x_point[*]``
 ========================  =========================================================
 
 Profiles and maps are usually time dependent: they have one curve or image per time
 slice and are shown at the time selected in the GUI. Coordinates (time, radial grid,
 ...) come from the Data Dictionary through ``node.coordinates``, which takes care of
 homogeneous and heterogeneous time and of alternative coordinates.
+
+A path with wildcards (``pf_active/coil[*]/current/data``) gives :class:`Channels`:
+one trace or profile per element of the arrays of structures, named after them.
 """
 
 import difflib
 import logging
-from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from imas.ids_data_type import IDSDataType
 from imas.ids_defs import EMPTY_FLOAT, EMPTY_INT
 from imas.ids_primitive import IDSPrimitive
 
-from idscope.data.paths import ALL, SignalPath
+from idscope.data.paths import ALL, Range, Selector, SignalPath
 from idscope.errors import NoDataError, PathError
 
 logger = logging.getLogger(__name__)
@@ -36,6 +42,10 @@ logger = logging.getLogger(__name__)
 TRACE = "trace"
 PROFILE = "profile"
 MAP = "map"
+SHAPE = "shape"
+
+GEOMETRY, OUTLINE, POINT = "geometry", "outline", "point"
+"""Kinds of shapes: closed cross-sections, curves and points."""
 
 _GENERIC_NAMES = {"data", "value", "values", "dim1", "dim2", "dim3"}
 
@@ -231,16 +241,115 @@ class MapSeries(SignalData):
         return x1, x2, z, self.slice_time(index)
 
 
+class Channels(SignalData):
+    """A signal per element of the wildcard arrays of structures of a path.
+
+    ``pf_active/coil[*]/current/data`` has a trace per coil, and
+    ``core_profiles/profiles_1d/ion[*]/temperature`` a profile per ion species.
+    The members are all traces or all profiles (``kind`` is theirs); :attr:`names`
+    come from the ``name``, ``label`` or ``identifier`` of the elements.
+    """
+
+    def __init__(
+        self,
+        path,
+        members: Sequence[SignalData],
+        names: Sequence[str],
+        value_axis: Axis,
+        documentation="",
+        axis_label: str = "",
+    ):
+        super().__init__(path, None, value_axis, documentation)
+        self.members = list(members)
+        self.names = list(names)
+        self.axis_label = axis_label
+        """What the members are, e.g. ``coil``: the last wildcard of the path."""
+        self.kind = self.members[0].kind
+        self.x_axis = self.members[0].x_axis
+
+    @property
+    def is_time_dependent(self) -> bool:
+        return any(member.is_time_dependent for member in self.members)
+
+    def values_at(self, t: Optional[float]) -> Tuple[np.ndarray, Optional[float]]:
+        """The value of every trace at the sample closest to time ``t``, and the
+        time of that sample (of the first member that has one)."""
+        values = np.full(len(self.members), np.nan)
+        times = []
+        for k, member in enumerate(self.members):
+            index = member.time_index(t)
+            if index is None:
+                continue
+            values[k] = member.values if member.time is None else member.values[index]
+            times.append(member.slice_time(index))
+        known = [time for time in times if time is not None]
+        return values, (known[0] if known else None)
+
+    def __repr__(self) -> str:
+        return f"<Channels {self.path.text!r} ({len(self.members)} {self.kind}s)>"
+
+
+class Shapes(SignalData):
+    """Shapes in the poloidal plane, drawn over maps: closed cross-sections
+    (``geometry``: coils, passive loops), curves (``outline``: walls, the plasma
+    boundary) or points (``point``: X-points, the magnetic axis).
+
+    ``slices[i]`` holds an array of (R, Z) rows per member at time slice ``i``
+    (static shapes have one slice); rows of NaN separate the parts of a member.
+    """
+
+    kind = SHAPE
+
+    def __init__(
+        self,
+        path,
+        time,
+        slices: Sequence[Sequence[np.ndarray]],
+        shape: str,
+        names: Sequence[str],
+        documentation="",
+        fixed_time=None,
+    ):
+        super().__init__(path, time, Axis("Z", "m"), documentation, fixed_time)
+        self.slices = [list(outlines) for outlines in slices]
+        self.shape = shape
+        self.names = list(names)
+        self.x_axis = Axis("R", "m")
+        self.x2_axis = Axis("Z", "m")
+
+    def at(self, t: Optional[float]) -> Tuple[List[np.ndarray], Optional[float]]:
+        """The outline of every member at the slice closest to ``t``, and its time."""
+        index = self.time_index(t)
+        if index is None or not self.slices:
+            return [], None
+        return self.slices[index], self.slice_time(index)
+
+
 # ---------------------------------------------------------------------------------
 # Path planning against the Data Dictionary metadata
 # ---------------------------------------------------------------------------------
 
 
+class _Step(NamedTuple):
+    name: str
+    meta: object
+    chain: Tuple[Selector, ...]
+    """Selectors applied in turn to the elements of an array of structures: its
+    own index, then the one given for it on the last node. Empty for other nodes,
+    and for a time array of structures without index."""
+
+
 class _Plan(NamedTuple):
+    steps: Tuple[_Step, ...]
     time_pos: Optional[int]
-    """Position in the path of the array of structures that provides the time axis."""
+    """Position of the array of structures that provides the time axis."""
+    channels: Tuple[int, ...]
+    """Positions of the wildcard arrays of structures (other than time)."""
     leaf_meta: object
-    leaf_index: Optional[int]
+    shape: Optional[str]
+    """``geometry``, ``outline`` or ``point`` for shapes, ``None`` for data."""
+    selectors: Tuple[Selector, ...]
+    """Selectors on the dimensions of the data node."""
 
 
 def is_time_aos(meta) -> bool:
@@ -250,6 +359,26 @@ def is_time_aos(meta) -> bool:
     if meta.coordinates and meta.coordinates[0].is_time_coordinate:
         return True
     return meta.type.is_dynamic
+
+
+def shape_kind(meta) -> Optional[str]:
+    """The kind of shape a structure (or the elements of an array of structures)
+    describes: a Data Dictionary 2D geometry, an (r, z) curve or an (r, z) point."""
+    if meta.data_type not in (IDSDataType.STRUCTURE, IDSDataType.STRUCT_ARRAY):
+        return None
+    children = {child.name: child for child in meta}
+    if {"geometry_type", "outline", "rectangle"} <= set(children):
+        return GEOMETRY
+    r, z = children.get("r"), children.get("z")
+    if r is None or z is None:
+        return None
+    if r.data_type is not IDSDataType.FLT or z.data_type is not IDSDataType.FLT:
+        return None
+    if r.ndim == z.ndim == 1:
+        return OUTLINE
+    if r.ndim == z.ndim == 0:
+        return POINT
+    return None
 
 
 def _child_meta(meta, name: str, path_so_far: str):
@@ -266,61 +395,95 @@ def _child_meta(meta, name: str, path_so_far: str):
 
 
 def plan_path(ids_meta, path: SignalPath) -> _Plan:
-    """Check a path against the metadata and find the time axis.
+    """Check a path against the metadata: find the time axis, the wildcards and
+    what the path points to.
 
     Raises:
         PathError: when the path does not point to plottable data.
     """
+    metas = []
     meta = ids_meta
+    for pos, name in enumerate(path.parts):
+        if pos and meta.data_type not in (IDSDataType.STRUCTURE, IDSDataType.STRUCT_ARRAY):
+            here = "/".join(path.parts[:pos])
+            raise PathError(f"'{here}' is a data node and has no children.")
+        meta = _child_meta(meta, name, "/".join(path.parts[:pos]))
+        metas.append(meta)
+    leaf = metas[-1]
+    here = path.dd_path
+    indices = list(path.indices)
+    data_index = list(path.data_index)
+
+    shape = None
+    if leaf.data_type in (IDSDataType.STRUCTURE, IDSDataType.STRUCT_ARRAY):
+        shape = shape_kind(leaf)
+        if shape is None and leaf.data_type is IDSDataType.STRUCT_ARRAY:
+            raise PathError(
+                f"'{here}' is an array of structures; continue the path to a "
+                "quantity inside it."
+            )
+        if shape is None:
+            children = ", ".join(sorted(child.name for child in leaf)[:8])
+            raise PathError(
+                f"'{here}' is a structure; continue the path to one of its "
+                f"quantities (e.g. {children})."
+            )
+        if leaf.data_type is IDSDataType.STRUCT_ARRAY:
+            # e.g. boundary/x_point[*]: the index is the one of the array
+            indices[-1] = data_index.pop(0) if data_index else None
+    elif leaf.data_type not in (IDSDataType.FLT, IDSDataType.INT):
+        raise PathError(
+            f"'{here}' holds {leaf.data_type.name.lower()} data; only numbers can be "
+            "plotted."
+        )
+
+    for pos, (meta, index) in enumerate(zip(metas, indices)):
+        if index is not None and meta.data_type is not IDSDataType.STRUCT_ARRAY:
+            node = "/".join(path.parts[:pos + 1])
+            raise PathError(f"'{node}' is a structure and cannot be indexed.")
+    # The first indices of the last node are for the wildcards, in path order
+    wildcards = [pos for pos, index in enumerate(indices) if isinstance(index, Range)]
+    chains = [() if index is None else (index,) for index in indices]
+    for pos, selector in zip(wildcards, data_index):
+        chains[pos] += (selector,)
+    selectors = tuple(data_index[len(wildcards):])
+    if shape is not None and selectors:
+        raise PathError(f"'{here}' is a structure and cannot be indexed.")
+    if shape is None and len(selectors) > leaf.ndim:
+        if leaf.ndim == 0 and not wildcards:
+            raise PathError(f"'{here}' is a scalar and cannot be indexed.")
+        raise PathError(
+            f"'{path.text}' has {len(path.data_index)} indices on its last node, for "
+            f"{len(wildcards)} wildcard{'s' if len(wildcards) != 1 else ''} and "
+            f"{leaf.ndim} dimension{'s' if leaf.ndim != 1 else ''} of '{leaf.name}'."
+        )
+
     time_pos = None
-    walked: List[str] = []
-    last = len(path.parts) - 1
-    for pos, (name, index) in enumerate(zip(path.parts, path.indices)):
-        meta = _child_meta(meta, name, "/".join(walked))
-        walked.append(name)
-        here = "/".join(walked)
-        data_type = meta.data_type
-        if data_type is IDSDataType.STRUCT_ARRAY:
-            if pos == last:
+    channels = []
+    for pos, meta in enumerate(metas):
+        chain = chains[pos]
+        if meta.data_type is not IDSDataType.STRUCT_ARRAY:
+            continue
+        if any(not isinstance(selector, Range) for selector in chain):
+            continue  # one element
+        node = "/".join(path.parts[:pos + 1])
+        name = path.parts[pos]
+        if is_time_aos(meta):
+            if time_pos is not None:
                 raise PathError(
-                    f"'{here}' is an array of structures; continue the path to a "
-                    "quantity inside it."
+                    f"Only one time-dependent array of structures can be left without "
+                    f"an index: '{path.parts[time_pos]}' and '{name}'."
                 )
-            if index is None or index is ALL:
-                if not is_time_aos(meta):
-                    raise PathError(
-                        f"'{here}' is an array of structures that does not depend on "
-                        f"time: give an index, e.g. '{name}[0]'."
-                    )
-                if time_pos is not None:
-                    raise PathError(
-                        f"Only one time-dependent array of structures can be left "
-                        f"without an index: '{path.parts[time_pos]}' and '{name}'."
-                    )
-                time_pos = pos
-        elif data_type is IDSDataType.STRUCTURE:
-            if index is not None:
-                raise PathError(f"'{here}' is a structure and cannot be indexed.")
-            if pos == last:
-                children = ", ".join(sorted(child.name for child in meta)[:8])
-                raise PathError(
-                    f"'{here}' is a structure; continue the path to one of its "
-                    f"quantities (e.g. {children})."
-                )
+            time_pos = pos
+        elif not chain:
+            raise PathError(
+                f"'{node}' is an array of structures that does not depend on time: "
+                f"give an index, e.g. '{name}[0]', or '{name}[*]' for all of them."
+            )
         else:
-            if pos != last:
-                raise PathError(f"'{here}' is a data node and has no children.")
-            if data_type not in (IDSDataType.FLT, IDSDataType.INT):
-                raise PathError(
-                    f"'{here}' holds {data_type.name.lower()} data; only numbers can "
-                    "be plotted."
-                )
-            if index is ALL:
-                index = None
-            if index is not None and meta.ndim == 0:
-                raise PathError(f"'{here}' is a scalar and cannot be indexed.")
-            return _Plan(time_pos, meta, index)
-    raise PathError(f"'{path.text}' does not point to a quantity.")  # pragma: no cover
+            channels.append(pos)
+    steps = tuple(_Step(*item) for item in zip(path.parts, metas, chains))
+    return _Plan(steps, time_pos, tuple(channels), leaf, shape, selectors)
 
 
 # ---------------------------------------------------------------------------------
@@ -343,28 +506,47 @@ def _leaf_array(leaf) -> np.ndarray:
     return _as_float_array(leaf.value, meta.data_type)
 
 
-def _navigate(node, parts, indices, times_out: List[float]):
-    """Follow ``parts``/``indices`` from ``node``, checking array bounds.
+def _elements(aos, chain: Sequence[Selector], what: str) -> Union[int, range]:
+    """The element (int) or elements (range) of an array of structures that the
+    selectors of ``chain`` pick, in turn."""
+    selection = range(len(aos))
+    for selector in chain:
+        if isinstance(selector, Range):
+            selection = selection[selector.as_slice()]
+            continue
+        size = len(selection)
+        if not -size <= selector < size:
+            if len(aos) == 0:
+                raise NoDataError(f"'{what}' is empty.")
+            raise NoDataError(
+                f"Index {selector} is out of range for '{what}', which has {size} "
+                f"element{'s' if size != 1 else ''}."
+            )
+        selection = selection[selector]
+    return selection
 
-    Only arrays of structures are indexed: an index on the data node is applied
-    later, by :func:`_select`. The time of explicitly indexed time slices is appended
-    to ``times_out``.
+
+def _walk(node, plan: _Plan, start: int, stop: int, key: Dict[int, int],
+          times_out: List[float]):
+    """Follow the steps ``start`` to ``stop`` of a plan from ``node``.
+
+    Wildcard arrays of structures take their index from ``key``, the others pick
+    one element. The time of explicitly indexed time slices is appended to
+    ``times_out``.
     """
-    for name, index in zip(parts, indices):
-        child = getattr(node, name)
-        if isinstance(index, int) and child.metadata.data_type is IDSDataType.STRUCT_ARRAY:
-            size = len(child)
-            if index >= size:
-                what = child.metadata.path_string
-                if size == 0:
-                    raise NoDataError(f"'{what}' is empty.")
-                raise NoDataError(
-                    f"Index {index} is out of range for '{what}', which has {size} "
-                    f"element{'s' if size != 1 else ''}."
-                )
-            if is_time_aos(child.metadata):
-                times = aos_times(child)
-                times_out.append(float(times[index]))
+    for pos in range(start, stop):
+        step = plan.steps[pos]
+        child = getattr(node, step.name)
+        if step.meta.data_type is IDSDataType.STRUCT_ARRAY:
+            what = child.metadata.path_string
+            if pos in key:
+                index = key[pos]
+                if index >= len(child):
+                    raise NoDataError(f"'{what}' has no element {index}.")
+            else:
+                index = _elements(child, step.chain, what)
+                if is_time_aos(child.metadata):
+                    times_out.append(float(aos_times(child)[index]))
             child = child[index]
         node = child
     return node
@@ -393,6 +575,66 @@ def aos_times(aos) -> np.ndarray:
         times = np.arange(n, dtype=float)
     times[times == EMPTY_FLOAT] = np.nan
     return times
+
+
+def _element_name(element, aos_name: str, index: int) -> str:
+    """Name of an element of an array of structures, for legends."""
+    for child in ("name", "label", "identifier"):
+        node = getattr(element, child, None)
+        if node is None:
+            continue
+        if not isinstance(node, IDSPrimitive):  # e.g. an identifier structure
+            node = getattr(node, "name", None)
+            if not isinstance(node, IDSPrimitive):
+                continue
+        value = node.value
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return f"{aos_name}[{index}]"
+
+
+def _members(ids, plan: _Plan) -> List[Tuple[Dict[int, int], str]]:
+    """The index in every wildcard array of structures, and the name, of each
+    member of a path with wildcards."""
+    found: Dict[Tuple[int, ...], Tuple[Tuple[str, int], ...]] = {}
+    names: Dict[Tuple[int, ...], Tuple[str, int]] = {}
+    deepest = plan.channels[-1]
+
+    def walk(node, pos, key, labels):
+        if pos > deepest:
+            found.setdefault(key, labels)
+            return
+        step = plan.steps[pos]
+        child = getattr(node, step.name)
+        if step.meta.data_type is not IDSDataType.STRUCT_ARRAY:
+            walk(child, pos + 1, key, labels)
+            return
+        what = child.metadata.path_string
+        if pos in plan.channels:
+            selection = _elements(child, step.chain, what)
+            for i in selection:
+                sub = key + (i,)
+                if sub not in names:
+                    names[sub] = (_element_name(child[i], step.name, i), len(selection))
+                walk(child[i], pos + 1, sub, labels + (names[sub],))
+        elif pos == plan.time_pos:
+            for i in _elements(child, step.chain, what):
+                walk(child[i], pos + 1, key, labels)
+        else:
+            try:
+                index = _elements(child, step.chain, what)
+            except NoDataError:
+                return
+            walk(child[index], pos + 1, key, labels)
+
+    walk(ids, 0, (), ())
+    members = []
+    for key in sorted(found):
+        labels = found[key]
+        # Levels with a single element (e.g. coils of one element) add nothing
+        shown = [name for name, count in labels if count > 1] or [labels[-1][0]]
+        members.append((dict(zip(plan.channels, key)), "/".join(shown)))
+    return members
 
 
 def coordinate_label(meta) -> str:
@@ -431,15 +673,21 @@ def _time_of(leaf, dim: int, size: int) -> np.ndarray:
     return values
 
 
-def _select(value: np.ndarray, index: Optional[int], what: str) -> np.ndarray:
-    """Apply an index on the first dimension of a data node."""
-    if index is None:
-        return value
-    if index >= value.shape[0]:
-        raise NoDataError(
-            f"Index {index} is out of range for '{what}' (size {value.shape[0]})."
-        )
-    return value[index]
+def _full_selectors(selectors: Sequence[Selector], shape, what: str) -> list:
+    """One selector per dimension of an array of ``shape`` (indices made positive)."""
+    full = list(selectors) + [ALL] * (len(shape) - len(selectors))
+    for dim, selector in enumerate(full):
+        if isinstance(selector, Range):
+            continue
+        size = shape[dim]
+        if not -size <= selector < size:
+            raise NoDataError(f"Index {selector} is out of range for '{what}' (size {size}).")
+        full[dim] = selector % size
+    return full
+
+
+def _numpy_index(full) -> tuple:
+    return tuple(s.as_slice() if isinstance(s, Range) else s for s in full)
 
 
 def extract_signal(ids, path: SignalPath) -> SignalData:
@@ -457,6 +705,21 @@ def extract_signal(ids, path: SignalPath) -> SignalData:
 
 def normalize(data: SignalData) -> SignalData:
     """``(y - y[0]) / (y[-1] - y[0])`` for every profile, e.g. psi -> psi_n."""
+    if isinstance(data, Channels) and data.kind == PROFILE:
+        members, names = [], []
+        for member, name in zip(data.members, data.names):
+            try:
+                members.append(normalize(member))
+                names.append(name)
+            except NoDataError:
+                continue
+        if not members:
+            raise NoDataError(
+                f"'{data.path.text}' cannot be normalized: the first and last values "
+                "of its profiles are missing or equal."
+            )
+        return Channels(data.path, members, names, members[0].value_axis,
+                        data.documentation, data.axis_label)
     if not isinstance(data, ProfileSeries):
         raise PathError(
             f"norm() applies to profiles, but '{data.path.text}' is a {data.kind}."
@@ -481,64 +744,124 @@ def _normalized(y: np.ndarray) -> np.ndarray:
 
 def _extract(ids, path: SignalPath) -> SignalData:
     plan = plan_path(ids.metadata, path)
+    if not plan.channels:
+        return _extract_member(ids, path, plan, {})
+    members = _members(ids, plan)
+    if not members:
+        first = "/".join(path.parts[:plan.channels[0] + 1])
+        raise NoDataError(f"'{path.text}': '{first}' has no elements.")
+    data, names, errors = [], [], []
+    for key, name in members:
+        try:
+            data.append(_extract_member(ids, path, plan, key))
+            names.append(name)
+        except NoDataError as exc:
+            errors.append(exc)
+    if not data:
+        raise errors[0]
+    if plan.shape is not None:
+        slices = [[member.slices[i][0] for member in data]
+                  for i in range(len(data[0].slices))]
+        return Shapes(path, data[0].time, slices, plan.shape, names,
+                      data[0].documentation, data[0].fixed_time)
+    return Channels(path, data, names, data[0].value_axis, data[0].documentation,
+                    path.parts[plan.channels[-1]])
+
+
+def _extract_member(ids, path: SignalPath, plan: _Plan, key: Dict[int, int]):
+    """The signal of one member of a path (the whole signal without wildcards)."""
     meta = plan.leaf_meta
-    value_axis = Axis(path.label, meta.units)
     doc = meta.documentation or ""
+    value_axis = Axis(path.label, meta.units if plan.shape is None else "m")
     fixed_times: List[float] = []
+    n_steps = len(plan.steps)
 
     if plan.time_pos is None:
-        leaf = _navigate(ids, path.parts, path.indices, fixed_times)
+        node = _walk(ids, plan, 0, n_steps, key, fixed_times)
         fixed_time = fixed_times[-1] if fixed_times else None
-        return _from_leaf(path, leaf, plan, value_axis, doc, fixed_time)
+        if plan.shape is not None:
+            outline = read_shape(node, plan.shape)
+            if outline is None:
+                raise NoDataError(f"'{path.text}' is not filled.")
+            return Shapes(path, None, [[outline]], plan.shape, [""], doc, fixed_time)
+        return _from_leaf(path, node, plan.selectors, value_axis, doc, fixed_time)
 
-    split = plan.time_pos + 1
-    aos = _navigate(ids, path.parts[:split], path.indices[:plan.time_pos] + (None,),
-                    fixed_times)
+    tp = plan.time_pos
+    parent = _walk(ids, plan, 0, tp, key, fixed_times)
     fixed_time = fixed_times[-1] if fixed_times else None
-    if len(aos) == 0:
+    aos = getattr(parent, plan.steps[tp].name)
+    slices = list(_elements(aos, plan.steps[tp].chain, aos.metadata.path_string))
+    if not slices:
         raise NoDataError(f"'{aos.metadata.path_string}' has no time slices.")
-    times = aos_times(aos)
-    parts, indices = path.parts[split:], path.indices[split:]
+    times = aos_times(aos)[slices]
     errors: List[NoDataError] = []
 
-    def slice_data(i: int):
-        """Data node and value of slice i, or (None, None) when it is not filled."""
+    def node_of(i: int):
+        """The node the path points to in time slice i (None if it is missing)."""
         try:
-            leaf = _navigate(aos[i], parts, indices, [])
-            value = _leaf_array(leaf)
-            if value.size == 0 or (value.ndim == 0 and np.isnan(value)):
-                return None, None
-            return leaf, _select(value, plan.leaf_index, meta.path_string)
+            return _walk(aos[i], plan, tp + 1, n_steps, key, [])
         except NoDataError as exc:  # e.g. fewer ions in this slice
             errors.append(exc)
-            return None, None
+            return None
 
     def not_filled() -> NoDataError:
         if errors:
             return NoDataError(f"'{path.text}': {errors[0]}")
         return NoDataError(f"'{path.text}' is not filled.")
 
-    ndim = meta.ndim - (plan.leaf_index is not None)
-    if ndim == 0:
-        values = np.full(len(aos), np.nan)
-        for i in range(len(aos)):
-            _, value = slice_data(i)
+    if plan.shape is not None:
+        outlines = []
+        for i in slices:
+            node = node_of(i)
+            outline = read_shape(node, plan.shape) if node is not None else None
+            outlines.append([np.empty((0, 2)) if outline is None else outline])
+        if all(outline[0].size == 0 for outline in outlines):
+            raise not_filled()
+        return Shapes(path, times, outlines, plan.shape, [""], doc, fixed_time)
+
+    full = list(plan.selectors) + [ALL] * (meta.ndim - len(plan.selectors))
+    kept = [dim for dim, selector in enumerate(full) if isinstance(selector, Range)]
+
+    def slice_data(i: int):
+        """Data node, value (after the selectors) and selectors of slice i, or
+        Nones when it is not filled."""
+        leaf = node_of(i)
+        if leaf is None:
+            return None, None, None
+        value = _leaf_array(leaf)
+        if value.size == 0 or (value.ndim == 0 and np.isnan(value)):
+            return None, None, None
+        try:
+            selectors = _full_selectors(plan.selectors, value.shape, meta.path_string)
+        except NoDataError as exc:
+            errors.append(exc)
+            return None, None, None
+        return leaf, value[_numpy_index(selectors)], selectors
+
+    def coordinate(leaf, dim: int, selectors, size: int):
+        x, axis = _coordinate(leaf, dim, size)
+        return x[selectors[dim].as_slice()], axis
+
+    if not kept:
+        values = np.full(len(slices), np.nan)
+        for k, i in enumerate(slices):
+            _, value, _ = slice_data(i)
             if value is not None:
-                values[i] = value
+                values[k] = value
         if np.all(np.isnan(values)):
             raise not_filled()
         return Trace(path, times, values, value_axis, doc, fixed_time)
 
-    if ndim == 1:
-        dim = 1 if plan.leaf_index is not None else 0
+    if len(kept) == 1:
         xs, ys, x_axis = [], [], None
-        for i in range(len(aos)):
-            leaf, y = slice_data(i)
+        for i in slices:
+            leaf, y, selectors = slice_data(i)
             if leaf is None:
                 xs.append(np.empty(0))
                 ys.append(np.empty(0))
                 continue
-            x, axis = _coordinate(leaf, dim, len(y))
+            size = _leaf_array(leaf).shape[kept[0]]
+            x, axis = coordinate(leaf, kept[0], selectors, size)
             xs.append(x)
             ys.append(y)
             x_axis = x_axis or axis
@@ -546,23 +869,23 @@ def _extract(ids, path: SignalPath) -> SignalData:
             raise not_filled()
         return ProfileSeries(path, times, xs, ys, x_axis, value_axis, doc, fixed_time)
 
-    if ndim == 2:
-        dims = (1, 2) if plan.leaf_index is not None else (0, 1)
-        axes = _map_axes(meta, dims)
+    if len(kept) == 2:
+        axes = _map_axes(meta, kept)
 
-        def load(i: int):
-            leaf, z = slice_data(i)
+        def load(k: int):
+            leaf, z, selectors = slice_data(slices[k])
             if leaf is None:
                 return np.empty(0), np.empty(0), np.empty((0, 0))
-            x1, _ = _coordinate(leaf, dims[0], z.shape[0])
-            x2, _ = _coordinate(leaf, dims[1], z.shape[1])
+            shape = _leaf_array(leaf).shape
+            x1, _ = coordinate(leaf, kept[0], selectors, shape[kept[0]])
+            x2, _ = coordinate(leaf, kept[1], selectors, shape[kept[1]])
             return x1, x2, z
 
-        return MapSeries(path, times, len(aos), load, axes[0], axes[1], value_axis,
+        return MapSeries(path, times, len(slices), load, axes[0], axes[1], value_axis,
                          doc, fixed_time)
 
     raise PathError(
-        f"'{path.text}' has {ndim} dimensions per time slice; idscope can show up "
+        f"'{path.text}' has {len(kept)} dimensions per time slice; idscope can show up "
         "to 2."
     )
 
@@ -582,55 +905,206 @@ def _map_axes(meta, dims) -> Tuple[Axis, Axis]:
     return axes[0], axes[1]
 
 
-def _from_leaf(path, leaf, plan: _Plan, value_axis, doc, fixed_time) -> SignalData:
+def _from_leaf(path, leaf, selectors, value_axis, doc, fixed_time) -> SignalData:
     """Build a signal from a single data node (no time array of structures)."""
     meta = leaf.metadata
     value = _leaf_array(leaf)
     if value.size == 0 or (value.ndim == 0 and np.isnan(value)):
         raise NoDataError(f"'{path.text}' is not filled.")
-    value = _select(value, plan.leaf_index, meta.path_string)
-
-    # Dimensions of the data node that remain after the index
-    dims = list(range(meta.ndim))
-    if plan.leaf_index is not None:
-        dims = dims[1:]
+    full = _full_selectors(selectors, value.shape, meta.path_string)
     time_dim = next(
-        (d for d in dims if meta.coordinates[d].is_time_coordinate), None
+        (d for d in range(value.ndim) if meta.coordinates[d].is_time_coordinate), None
     )
-    other = [d for d in dims if d != time_dim]
+    if time_dim is not None and not isinstance(full[time_dim], Range):
+        # A single time sample: the signal no longer depends on time
+        fixed_time = float(_time_of(leaf, time_dim, value.shape[time_dim])[full[time_dim]])
+        time_dim = None
+    kept = [d for d, selector in enumerate(full) if isinstance(selector, Range)]
+    selected = value[_numpy_index(full)]
+    other = [d for d in kept if d != time_dim]
 
+    def coordinate(dim: int):
+        x, axis = _coordinate(leaf, dim, value.shape[dim])
+        return x[full[dim].as_slice()], axis
+
+    if len(other) > 2:
+        raise PathError(
+            f"'{path.text}' has {len(other)} dimensions besides time; idscope can show "
+            "up to 2."
+        )
     if time_dim is None:  # static data
         if not other:
-            return Trace(path, None, value, value_axis, doc, fixed_time)
+            return Trace(path, None, selected, value_axis, doc, fixed_time)
         if len(other) == 1:
-            x, x_axis = _coordinate(leaf, other[0], len(value))
-            return ProfileSeries(path, None, [x], [value], x_axis, value_axis, doc,
+            x, x_axis = coordinate(other[0])
+            return ProfileSeries(path, None, [x], [selected], x_axis, value_axis, doc,
                                  fixed_time)
-        if len(other) == 2:
-            x1, a1 = _coordinate(leaf, other[0], value.shape[0])
-            x2, a2 = _coordinate(leaf, other[1], value.shape[1])
-            return MapSeries(path, None, 1, lambda i: (x1, x2, value), a1, a2,
-                             value_axis, doc, fixed_time)
-        raise PathError(f"'{path.text}' has {len(other)} dimensions; idscope can show up to 2.")
+        (x1, a1), (x2, a2) = coordinate(other[0]), coordinate(other[1])
+        return MapSeries(path, None, 1, lambda i: (x1, x2, selected), a1, a2,
+                         value_axis, doc, fixed_time)
 
-    axis_t = dims.index(time_dim)
-    time = _time_of(leaf, time_dim, value.shape[axis_t])
+    time = _time_of(leaf, time_dim, value.shape[time_dim])[full[time_dim].as_slice()]
+    moved = np.moveaxis(selected, kept.index(time_dim), 0)
     if not other:
-        return Trace(path, time, value, value_axis, doc, fixed_time)
-    moved = np.moveaxis(value, axis_t, 0)
+        return Trace(path, time, moved, value_axis, doc, fixed_time)
     if len(other) == 1:
-        x, x_axis = _coordinate(leaf, other[0], moved.shape[1])
+        x, x_axis = coordinate(other[0])
         return ProfileSeries(path, time, [x] * len(time), list(moved), x_axis,
                              value_axis, doc, fixed_time)
-    if len(other) == 2:
-        x1, a1 = _coordinate(leaf, other[0], moved.shape[1])
-        x2, a2 = _coordinate(leaf, other[1], moved.shape[2])
-        return MapSeries(path, time, len(time), lambda i: (x1, x2, moved[i]), a1, a2,
-                         value_axis, doc, fixed_time)
-    raise PathError(
-        f"'{path.text}' has {len(other)} dimensions besides time; idscope can show "
-        "up to 2."
-    )
+    (x1, a1), (x2, a2) = coordinate(other[0]), coordinate(other[1])
+    return MapSeries(path, time, len(time), lambda i: (x1, x2, moved[i]), a1, a2,
+                     value_axis, doc, fixed_time)
+
+
+# ---------------------------------------------------------------------------------
+# Shapes in the poloidal plane
+# ---------------------------------------------------------------------------------
+
+_CIRCLE_POINTS = 65
+
+
+def read_shape(node, shape: str) -> Optional[np.ndarray]:
+    """(R, Z) rows of a shape structure, or None when it is not filled."""
+    if shape == GEOMETRY:
+        return geometry_outline(node)
+    r, z = _leaf_array(node.r), _leaf_array(node.z)
+    if shape == POINT:
+        if not (np.isfinite(r) and np.isfinite(z)):
+            return None
+        return np.array([[float(r), float(z)]])
+    if r.size == 0 or r.shape != z.shape:
+        return None
+    points = np.column_stack([r, z])
+    return _closed(points) if _is_closed(node, points) else points
+
+
+def _is_closed(outline, points: np.ndarray) -> bool:
+    """Whether a curve is closed: as its ``closed`` flag says (e.g. limiter units
+    of DD 3), else when its ends are about one segment apart."""
+    try:
+        from imas.util import get_parent
+
+        flag = getattr(get_parent(outline), "closed", None)
+    except Exception:  # pragma: no cover - depends on the imas-python version
+        flag = None
+    if isinstance(flag, IDSPrimitive) and flag.has_value:
+        return int(flag.value) == 1
+    finite = points[np.all(np.isfinite(points), axis=1)]
+    if len(finite) < 3:
+        return False
+    steps = np.hypot(*np.diff(finite, axis=0).T)
+    gap = float(np.hypot(*(finite[-1] - finite[0])))
+    return gap <= 2.0 * float(np.median(steps))
+
+
+def _scalar(node) -> float:
+    value = _leaf_array(node)
+    return float(value) if value.ndim == 0 else float("nan")
+
+
+def _closed(points) -> np.ndarray:
+    points = np.asarray(points, dtype=float)
+    if len(points) and not np.array_equal(points[0], points[-1]):
+        points = np.vstack([points, points[:1]])
+    return points
+
+
+def _circle(r: float, z: float, radius: float) -> np.ndarray:
+    theta = np.linspace(0.0, 2.0 * np.pi, _CIRCLE_POINTS)
+    return np.column_stack([r + radius * np.cos(theta), z + radius * np.sin(theta)])
+
+
+def _arc(start, end, radius: float) -> np.ndarray:
+    """Points from ``start`` towards ``end`` (excluded) along an arc of circle of
+    the given radius (a straight line for 0).
+
+    The Data Dictionary does not define the sign of the curvature radius: a positive
+    radius is taken to bend the arc to the right of the direction of travel (outwards
+    for a counter-clockwise contour), a negative one to the left.
+    """
+    start, end = np.asarray(start, float), np.asarray(end, float)
+    chord = end - start
+    length = float(np.hypot(*chord))
+    if not np.isfinite(radius) or radius == 0 or length == 0 or abs(radius) < length / 2:
+        return start[None, :]
+    left = np.array([-chord[1], chord[0]]) / length
+    # The center is on the other side of the chord than the (shorter) arc
+    center = (start + end) / 2 + np.sign(radius) * left * np.sqrt(radius**2 - (length / 2) ** 2)
+    a0 = np.arctan2(*(start - center)[::-1])
+    a1 = np.arctan2(*(end - center)[::-1])
+    sweep = (a1 - a0 + np.pi) % (2 * np.pi) - np.pi  # the short way round
+    angles = a0 + sweep * np.linspace(0.0, 1.0, 17)[:-1]
+    return center + abs(radius) * np.column_stack([np.cos(angles), np.sin(angles)])
+
+
+def geometry_outline(geometry) -> Optional[np.ndarray]:
+    """Closed outline of a Data Dictionary 2D geometry (of coil elements, passive
+    loops, ...), for any of its ``geometry_type``: outline, rectangle, oblique
+    (parallelogram), arcs of circle, annulus or thick line. Rows of NaN separate the
+    two circles of an annulus. None when it is not filled."""
+    kind = _scalar(geometry.geometry_type)
+    kind = int(kind) if np.isfinite(kind) else 0
+    outline = geometry.outline
+    rectangle = geometry.rectangle
+    if kind == 1 or (kind == 0 and len(outline.r)):
+        r, z = _leaf_array(outline.r), _leaf_array(outline.z)
+        if r.size == 0 or r.shape != z.shape:
+            return None
+        return _closed(np.column_stack([r, z]))
+    if kind in (0, 2):
+        r, z = _scalar(rectangle.r), _scalar(rectangle.z)
+        width, height = _scalar(rectangle.width), _scalar(rectangle.height)
+        if not np.all(np.isfinite([r, z, width, height])):
+            return None
+        dr, dz = width / 2, height / 2
+        return _closed([[r - dr, z - dz], [r + dr, z - dz], [r + dr, z + dz],
+                        [r - dr, z + dz]])
+    if kind == 3:
+        oblique = geometry.oblique
+        r, z = _scalar(oblique.r), _scalar(oblique.z)
+        a, b = _scalar(oblique.length_alpha), _scalar(oblique.length_beta)
+        alpha, beta = (np.nan_to_num(_scalar(oblique.alpha)),
+                       np.nan_to_num(_scalar(oblique.beta)))
+        if not np.all(np.isfinite([r, z, a, b])):
+            return None
+        p0 = np.array([r, z])
+        p1 = p0 + a * np.array([np.cos(alpha), np.sin(alpha)])
+        p3 = p0 + b * np.array([-np.sin(beta), np.cos(beta)])
+        return _closed([p0, p1, p1 + p3 - p0, p3])
+    if kind == 4:
+        arcs = geometry.arcs_of_circle
+        r, z = _leaf_array(arcs.r), _leaf_array(arcs.z)
+        radii = _leaf_array(arcs.curvature_radii)
+        if r.size < 2 or r.shape != z.shape:
+            return None
+        points = np.column_stack([r, z])
+        parts = [
+            _arc(points[i], points[(i + 1) % len(points)],
+                 float(radii[i]) if i < radii.size else 0.0)
+            for i in range(len(points))
+        ]
+        return _closed(np.vstack(parts))
+    if kind == 5:
+        annulus = geometry.annulus
+        r, z = _scalar(annulus.r), _scalar(annulus.z)
+        inner, outer = _scalar(annulus.radius_inner), _scalar(annulus.radius_outer)
+        if not np.all(np.isfinite([r, z, outer])):
+            return None
+        rings = [_circle(r, z, outer)]
+        if np.isfinite(inner) and inner > 0:
+            rings += [np.full((1, 2), np.nan), _circle(r, z, inner)]
+        return np.vstack(rings)
+    if kind == 6:
+        line = geometry.thick_line
+        p1 = np.array([_scalar(line.first_point.r), _scalar(line.first_point.z)])
+        p2 = np.array([_scalar(line.second_point.r), _scalar(line.second_point.z)])
+        thickness = _scalar(line.thickness)
+        length = float(np.hypot(*(p2 - p1)))
+        if not np.all(np.isfinite([*p1, *p2, thickness])) or length == 0:
+            return None
+        normal = np.array([-(p2 - p1)[1], (p2 - p1)[0]]) / length * thickness / 2
+        return _closed([p1 + normal, p2 + normal, p2 - normal, p1 - normal])
+    return None
 
 
 def apply_x(data: SignalData, x_data: SignalData) -> SignalData:
@@ -639,6 +1113,19 @@ def apply_x(data: SignalData, x_data: SignalData) -> SignalData:
     Both must be profiles with the same number of slices and points, for example
     ``profiles_1d/electrons/temperature`` with ``profiles_1d/grid/psi``.
     """
+    if isinstance(data, Channels):
+        if isinstance(x_data, Channels):
+            pairs = _paired(data, x_data)
+            members = [apply_x(member, x_member) for member, x_member in pairs]
+        else:
+            members = [apply_x(member, x_data) for member in data.members]
+        return Channels(data.path, members, data.names, data.value_axis,
+                        data.documentation, data.axis_label)
+    if isinstance(x_data, Channels):
+        raise PathError(
+            f"The x path '{x_data.path.text}' has wildcards, but '{data.path.text}' "
+            "does not."
+        )
     if not isinstance(data, ProfileSeries) or not isinstance(x_data, ProfileSeries):
         raise PathError("An x path is only supported for profiles.")
     if x_data.time is not None and data.time is not None:
@@ -665,6 +1152,20 @@ def apply_x(data: SignalData, x_data: SignalData) -> SignalData:
         data.path, data.time, new_xs, data.ys, x_axis, data.value_axis,
         data.documentation, data.fixed_time,
     )
+
+
+def _paired(data: Channels, x_data: Channels):
+    """Members of ``data`` with the members of ``x_data`` of the same name, or in
+    the same position."""
+    x_by_name = dict(zip(x_data.names, x_data.members))
+    if set(data.names) <= set(x_by_name):
+        return [(member, x_by_name[name]) for member, name in zip(data.members, data.names)]
+    if len(data.members) != len(x_data.members):
+        raise PathError(
+            f"'{x_data.path.text}' has {len(x_data.members)} elements but "
+            f"'{data.path.text}' has {len(data.members)}."
+        )
+    return list(zip(data.members, x_data.members))
 
 
 def _interp(grid: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
