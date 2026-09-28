@@ -1,10 +1,18 @@
 """Listing of the plottable quantities in a data source (the IDS browser)."""
 
-from typing import List, NamedTuple, Optional
+from typing import List, NamedTuple, Optional, Tuple
 
 from imas.ids_data_type import IDSDataType
 
-from idscope.data.extract import MAP, PROFILE, TRACE, is_time_aos
+from idscope.data.extract import (
+    MAP,
+    PROFILE,
+    SHAPE,
+    TRACE,
+    dimension_names,
+    is_time_aos,
+    shape_kind,
+)
 from idscope.data.sources import DataSource
 
 CONSTANT = "constant"
@@ -18,12 +26,16 @@ class BrowseItem(NamedTuple):
     dd_path: str
     """Data Dictionary path without indices, e.g. ``profiles_1d/electrons/density``."""
     signal_path: str
-    """Suggested signal path, with ``[0]`` for arrays that do not depend on time."""
+    """Suggested signal path: with ``[:]`` (all elements) for the arrays of
+    structures that do not depend on time, ``[0]`` for maps."""
     kind: str
-    """``trace``, ``profile``, ``map``, ``constant`` or ``unsupported``."""
+    """``trace``, ``profile``, ``map``, ``shape``, ``constant`` or ``unsupported``."""
     time_dependent: bool
     units: str
     documentation: str
+    dimensions: Tuple[str, ...] = ()
+    """What the dimensions of the data run along, in the order an index on the
+    data selects them, e.g. ``('grid/dim1', 'grid/dim2')``."""
 
 
 def classify(ids_meta, dd_path: str):
@@ -34,7 +46,7 @@ def classify(ids_meta, dd_path: str):
         is not a numeric data node.
     """
     meta = ids_meta
-    parts = []
+    parts = []  # (name, is an array of structures to index)
     time_aos = False
     for name in dd_path.split("/"):
         try:
@@ -42,27 +54,49 @@ def classify(ids_meta, dd_path: str):
         except KeyError:
             return None
         if meta.data_type is IDSDataType.STRUCT_ARRAY:
-            if is_time_aos(meta) and not time_aos:
-                time_aos = True
-                parts.append(name)
-            else:
-                parts.append(f"{name}[0]")
+            indexed = not (is_time_aos(meta) and not time_aos)
+            time_aos |= not indexed
+            parts.append((name, indexed))
         else:
-            parts.append(name)
+            parts.append((name, False))
     if meta.data_type not in (IDSDataType.FLT, IDSDataType.INT):
-        return None
-    has_time_dim = any(c.is_time_coordinate for c in meta.coordinates)
-    time_dependent = time_aos or has_time_dim
-    other_dims = meta.ndim - (has_time_dim and not time_aos)
-    if other_dims == 0:
-        kind = TRACE if time_dependent else CONSTANT
-    elif other_dims == 1:
-        kind = PROFILE
-    elif other_dims == 2:
+        kind = SHAPE if shape_kind(meta) else None
+        if kind is None:
+            return None
+        return kind, time_aos, _signal_path(parts, ":")
+    # Every dimension of the data counts, time included; the time array of
+    # structures is not one of them
+    time_dims = [c.is_time_coordinate for c in meta.coordinates]
+    time_dependent = time_aos or any(time_dims)
+    if meta.ndim == 0:
+        kind = TRACE if time_aos else CONSTANT
+    elif meta.ndim == 1:
+        kind = TRACE if time_dims[0] and not time_aos else PROFILE
+    elif meta.ndim == 2:
         kind = MAP
     else:
-        kind = UNSUPPORTED
-    return kind, time_dependent, "/".join(parts)
+        kind = UNSUPPORTED  # until an index selects at most two dimensions
+    # All elements, except for maps: one map is shown at a time
+    return kind, time_dependent, _signal_path(parts, "0" if kind == MAP else ":")
+
+
+def _signal_path(parts, index: str) -> str:
+    return "/".join(f"{name}[{index}]" if indexed else name for name, indexed in parts)
+
+
+def shape_of(ids_meta, dd_path: str) -> Optional[str]:
+    """The Data Dictionary path of the outermost shape (e.g. a coil geometry, an
+    outline or a point) that ``dd_path`` belongs to, if any."""
+    meta = ids_meta
+    parts = dd_path.split("/")
+    for depth, name in enumerate(parts[:-1]):
+        try:
+            meta = meta[name]
+        except KeyError:
+            return None
+        if shape_kind(meta):
+            return "/".join(parts[: depth + 1])
+    return None
 
 
 def list_signals(
@@ -79,7 +113,11 @@ def list_signals(
     ids = source.get_ids(ids_name, occurrence)
     head = ids_name + (f":{occurrence}" if occurrence else "")
     items = []
+    shapes: List[str] = []
     for dd_path in source.filled_paths(ids_name, occurrence):
+        shape = shape_of(ids.metadata, dd_path)
+        if shape is not None and shape not in shapes:
+            shapes.append(shape)
         if not include_all:
             if dd_path.split("/", 1)[0] in _SKIPPED_ROOTS:
                 continue
@@ -98,8 +136,14 @@ def list_signals(
                 time_dependent,
                 meta.units,
                 meta.documentation or "",
+                tuple(dimension_names(meta)),
             )
         )
+    for dd_path in shapes:
+        kind, time_dependent, relative = classify(ids.metadata, dd_path)
+        meta = ids.metadata[dd_path]
+        items.append(BrowseItem(dd_path, f"{head}/{relative}", kind, time_dependent,
+                                "m", meta.documentation or ""))
     return items
 
 

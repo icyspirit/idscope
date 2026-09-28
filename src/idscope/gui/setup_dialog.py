@@ -35,8 +35,10 @@ class SetupDialog(QtWidgets.QDialog):
         self.kind.addItems(KINDS)
         self.kind.setCurrentText(config.kind)
         self.kind.setToolTip(
-            "auto: from the data; trace: y(t); profile: y(x) at the selected time;\n"
-            "map: z(x1, x2) at the selected time; spacetime: a profile as image z(t, x)"
+            "auto: from the data; trace: y(t); profile: y(x) at the selected time,\n"
+            "or a bar per element for paths with wildcards such as coil[:];\n"
+            "map: z(x1, x2) at the selected time, with shapes in (R, Z) over it;\n"
+            "spacetime: a profile as image z(t, x)"
         )
         self.x_label = self._optional_text(config.x_label)
         self.y_label = self._optional_text(config.y_label)
@@ -92,8 +94,15 @@ class SetupDialog(QtWidgets.QDialog):
             sources_tip += f"\nAvailable: {', '.join(source_labels)}"
         tips = {
             _PATH: "e.g. core_profiles/profiles_1d/electrons/temperature\n"
+                   "All elements (one curve or bar each): pf_active/coil[:]/current/data\n"
+                   "Some of them: coil[0:6]; a sample of each: current/data[0]\n"
+                   "An index on the data selects along its dimensions, in the order\n"
+                   "of the Data Dictionary coordinates (see the IDS browser): psi[:, 40]\n"
+                   "Shapes in (R, Z): pf_active/coil[:]/element[:]/geometry\n"
                    "Alternatives, tried in order: path_a | path_b\n"
-                   "norm(path): profiles normalized from their first to last point",
+                   "norm(path): profiles normalized from their first to last point\n"
+                   "transpose(path, 1, 0, 2): the dimensions in another order\n"
+                   "(numpy style; reversed without axes)",
             _SCALE: "plotted value = value × scale + offset",
             _OFFSET: "plotted value = value × scale + offset",
             _X: "x values of a profile (default: its coordinate), "

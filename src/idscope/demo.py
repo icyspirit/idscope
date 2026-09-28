@@ -64,6 +64,7 @@ def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME,
         n_ion = 2 if i < n_time - 3 else 1
         p1d.ion.resize(n_ion)
         for j, ion in enumerate(p1d.ion):
+            _set_first(ion, ("name", "label"), ("D", "C")[j])
             ion.z_ion = 1.0 + j
             ion.temperature = (0.8 - 0.2 * j) * te0[i] * shape + 40.0
         p1d.t_i_average = 0.8 * te0[i] * shape + 40.0
@@ -165,6 +166,83 @@ def magnetics(factory, scale: float = 1.0):
     return mag
 
 
+PF_COILS = [
+    # name, R, Z, width, height [m], turns, current per turn at t = 0 and flat top [A]
+    ("CS3U", 0.75, 1.25, 0.2, 0.5, 100, 12.0e3, -6.0e3),
+    ("CS2U", 0.75, 0.75, 0.2, 0.5, 100, 15.0e3, -9.0e3),
+    ("CS1U", 0.75, 0.25, 0.2, 0.5, 100, 18.0e3, -12.0e3),
+    ("CS1L", 0.75, -0.25, 0.2, 0.5, 100, 18.0e3, -12.0e3),
+    ("CS2L", 0.75, -0.75, 0.2, 0.5, 100, 15.0e3, -9.0e3),
+    ("CS3L", 0.75, -1.25, 0.2, 0.5, 100, 12.0e3, -6.0e3),
+    ("PF1", 1.25, 1.6, 0.3, 0.3, 50, 0.0, -4.0e3),
+    ("PF2", 2.3, 1.4, 0.25, 0.25, 50, 0.0, -6.0e3),
+    ("PF3", 2.85, 0.6, 0.2, 0.3, 50, 0.0, 8.0e3),
+    ("PF4", 2.85, -0.6, 0.2, 0.3, 50, 0.0, 8.0e3),
+    ("PF5", 2.3, -1.4, 0.25, 0.25, 50, 0.0, -6.0e3),
+    ("PF6", 1.25, -1.6, 0.3, 0.3, 50, 0.0, -4.0e3),
+]
+"""Poloidal field coils of the demo machine: a central solenoid of six modules
+(described as outlines) and six PF coils (described as rectangles)."""
+
+
+def pf_active(factory, scale: float = 1.0, n_time: int = N_TIME,
+              time: Optional[float] = None):
+    """pf_active: the coils of :data:`PF_COILS`, one element each, with their
+    current and voltage.
+
+    Args:
+        n_time: number of time points of the currents, from 0 to 10 s.
+        time: write the currents at this single time instead, like an
+            equilibrium code that solves for the coil currents.
+    """
+    from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
+
+    pf = factory.pf_active()
+    pf.ids_properties.homogeneous_time = IDS_TIME_MODE_HOMOGENEOUS
+    t = np.linspace(0.0, 10.0, n_time) if time is None else np.array([time])
+    pf.time = t
+    ramp = np.minimum(t / 2.0, 1.0)
+    pf.coil.resize(len(PF_COILS))
+    for coil, (name, r, z, width, height, turns, start, flat) in zip(pf.coil, PF_COILS):
+        coil.name = name
+        coil.element.resize(1)
+        element = coil.element[0]
+        element.turns_with_sign = float(turns)
+        geometry = element.geometry
+        if name.startswith("CS"):
+            geometry.geometry_type = 1
+            geometry.outline.r = np.array([r - width / 2, r + width / 2] * 2)[[0, 1, 3, 2]]
+            geometry.outline.z = np.array([z - height / 2] * 2 + [z + height / 2] * 2)
+        else:
+            geometry.geometry_type = 2
+            geometry.rectangle.r = r
+            geometry.rectangle.z = z
+            geometry.rectangle.width = width
+            geometry.rectangle.height = height
+        current = scale * (start + (flat - start) * ramp)
+        coil.current.data = current
+        # Inductive voltage while the current changes, resistive otherwise
+        rate = np.gradient(current, t) if len(t) > 1 else np.zeros(len(t))
+        coil.voltage.data = 0.02 * rate + 1.0e-3 * current
+    return pf
+
+
+def wall(factory):
+    """wall: a D-shaped first wall around the plasma, as one limiter unit."""
+    from imas.ids_defs import IDS_TIME_MODE_INDEPENDENT
+
+    w = factory.wall()
+    w.ids_properties.homogeneous_time = IDS_TIME_MODE_INDEPENDENT
+    w.description_2d.resize(1)
+    w.description_2d[0].limiter.unit.resize(1)
+    unit = w.description_2d[0].limiter.unit[0]
+    unit.name = "first wall"
+    theta = np.linspace(0.0, 2.0 * np.pi, 121)[:-1]  # closed: the first point is not repeated
+    unit.outline.r = 1.8 + 0.72 * np.cos(theta + 0.35 * np.sin(theta))
+    unit.outline.z = 1.15 * np.sin(theta)
+    return w
+
+
 def summary(factory, scale: float = 1.0, n_time: int = N_TIME):
     from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
 
@@ -190,7 +268,8 @@ def write_entry(uri: str, scale: float = 1.0, dd_version: Optional[str] = None,
         factory = entry.factory
         for ids in (core_profiles(factory, scale, rho_tor_norm=rho_tor_norm),
                     equilibrium(factory, scale, rho_tor_norm=rho_tor_norm),
-                    magnetics(factory, scale), summary(factory, scale)):
+                    magnetics(factory, scale), summary(factory, scale),
+                    pf_active(factory, scale), wall(factory)):
             entry.put(ids)
 
 
@@ -236,8 +315,7 @@ columns:
         contours: 10
         signals:
           - equilibrium/time_slice/profiles_2d[0]/psi
-          - path: equilibrium/time_slice/boundary/outline/z
-            x: equilibrium/time_slice/boundary/outline/r
+          - path: equilibrium/time_slice/boundary/outline
             label: boundary
 """
 

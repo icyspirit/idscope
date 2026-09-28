@@ -19,7 +19,7 @@ def test_list_quantities(data_dir, capsys):
 
 def test_list_templates(capsys):
     assert main(["--list-templates"]) == 0
-    assert capsys.readouterr().out.split() == ["core_profiles", "equilibrium"]
+    assert capsys.readouterr().out.split() == ["core_profiles", "equilibrium", "pf_active"]
 
 
 def test_template_export(tmp_path, data_dir, capsys):
