@@ -17,7 +17,7 @@ EPILOG = """\
 examples:
   idscope                                continue the last session
   idscope shot.nc                        the panels of the last session, other data
-  idscope --new shot.nc                  browse a netCDF file in empty panels
+  idscope --new shot.nc                  browse a netCDF file in an empty panel
   idscope scope.yaml                     open a saved configuration
   idscope scope.yaml -s A=a.nc -s B=b.nc apply a configuration to other data
   idscope -T equilibrium a.nc b.nc       compare two sources with a template
@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--new", action="store_true",
-        help="start with empty panels instead of those of the last session",
+        help="start with an empty panel instead of the panels of the last session",
     )
     parser.add_argument(
         "--list-templates", action="store_true", help="print the template names and exit"
@@ -119,7 +119,7 @@ def _last_session():
     try:
         return load_session()
     except ConfigError as exc:
-        print(f"idscope: warning: {exc}\nStarting with empty panels.", file=sys.stderr)
+        print(f"idscope: warning: {exc}\nStarting with an empty panel.", file=sys.stderr)
         return None
 
 

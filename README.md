@@ -47,7 +47,7 @@ Other ways to start:
 ```bash
 idscope                                      # continue the last session
 idscope shot.nc                              # the panels of the last session, other data
-idscope --new shot.nc                        # browse a netCDF file in empty panels
+idscope --new shot.nc                        # browse a netCDF file in an empty panel
 idscope -T equilibrium a.nc b.nc             # compare two sources with a template
 idscope scope.yaml                           # open a configuration
 idscope scope.yaml -s A=a.nc -s "ref=imas:hdf5?path=/data/entry"
@@ -106,6 +106,11 @@ A template saved with File → Save as becomes a configuration that can be edite
   and pyqtgraph's *Export…* (PNG, SVG, CSV of the curves).
 - Signals that cannot be shown are reported in the panel (hover for details) and in
   View → Log.
+- The IDS browser asks the data entry which quantities are filled. Access Layers
+  older than 5.7, and backends such as MDSplus and UDA, cannot tell: the browser then
+  reads the data instead. Of long arrays of structures it reads only some elements
+  (three time slices; sixteen coils, channels, ...), so a quantity filled in none of
+  those is not listed, but can still be typed as a path.
 
 ## Sessions
 
@@ -116,7 +121,7 @@ Started without a configuration file or a template, it shows them again.
 |---|---|---|
 | `idscope` | of the last session | of the last session |
 | `idscope shot.nc` | of the last session | `shot.nc` |
-| `idscope --new shot.nc` | empty | `shot.nc` |
+| `idscope --new shot.nc` | one empty panel | `shot.nc` |
 | `idscope scope.yaml [shot.nc]` | of `scope.yaml` | of `scope.yaml`, or `shot.nc` |
 | `idscope -T NAME shot.nc` | of the template | `shot.nc` |
 

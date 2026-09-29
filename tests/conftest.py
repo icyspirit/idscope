@@ -47,3 +47,23 @@ def source_a(data_dir):
     source = DataSource(parse_source(f"A={data_dir / 'a.nc'}"))
     yield source
     source.close()
+
+
+@pytest.fixture
+def old_access_layer(monkeypatch):
+    """Data entries cannot list their filled quantities, as with Access Layer 5.4.
+
+    Returns the real ``imas.DBEntry.list_filled_paths``.
+    """
+    import imas
+    from imas.backends.imas_core.imas_interface import LLInterfaceError
+
+    def list_filled_paths(*args, **kwargs):
+        raise LLInterfaceError(
+            "This function requires at least Access Layer version 5.7, "
+            "but the current version is 5.4.3"
+        )
+
+    real = imas.DBEntry.list_filled_paths
+    monkeypatch.setattr(imas.DBEntry, "list_filled_paths", list_filled_paths)
+    return real

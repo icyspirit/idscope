@@ -473,3 +473,22 @@ def test_time_of_the_configuration(qtbot, config_path):
     # the time bar shows it too
     assert win.timebar.spin.value() == 7.0
     assert win.timebar.grid[win.timebar.slider.value()] == 7.0
+
+
+def test_browser_when_filled_quantities_cannot_be_listed(old_access_layer, window):
+    import imas
+
+    browser = window.browser
+    window.reload()  # list again, now by reading the data
+    browser.ids_combo.setCurrentIndex(browser.ids_combo.findText("core_profiles"))
+    assert "found by reading some of the data" in browser.status.text()
+    assert "Access Layer version 5.7" in browser.status.toolTip()
+    browser.filter.setText("temperature")
+    root = browser.tree.invisibleRootItem()
+    assert [root.child(i).text(0) for i in range(root.childCount())
+            if not root.child(i).isHidden()] == ["profiles_1d"]
+
+    imas.DBEntry.list_filled_paths = old_access_layer  # listed again
+    window.reload()
+    assert "found by reading" not in browser.status.text()
+    assert browser.status.toolTip() == ""

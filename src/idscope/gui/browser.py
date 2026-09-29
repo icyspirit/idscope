@@ -115,6 +115,7 @@ class BrowserWidget(QtWidgets.QWidget):
         with QtCore.QSignalBlocker(self.ids_combo):
             self.ids_combo.clear()
         self.tree.clear()
+        self.status.setToolTip("")
         source = self.current_source()
         if source is None:
             self.status.setText("No data source. Enter one in the Sources field.")
@@ -137,6 +138,7 @@ class BrowserWidget(QtWidgets.QWidget):
     def _on_ids(self, *_) -> None:
         self.tree.clear()
         self._items = []
+        self.status.setToolTip("")
         source = self.current_source()
         selection = self.ids_combo.currentData()
         if source is None or selection is None:
@@ -148,9 +150,13 @@ class BrowserWidget(QtWidgets.QWidget):
             self.status.setText(str(exc))
             return
         self._fill_tree(name, self._items)
+        # Data entries that cannot list their filled quantities are read instead
+        note = source.listing_notes.get((name, occurrence), "")
+        found = " found by reading some of the data (hover)" if note else ""
         self.status.setText(
-            f"{len(self._items)} quantities. Double-click or drag onto a panel."
+            f"{len(self._items)} quantities{found}. Double-click or drag onto a panel."
         )
+        self.status.setToolTip(note)
         self._apply_filter(self.filter.text())
 
     def _fill_tree(self, ids_name: str, items: List[BrowseItem]) -> None:
