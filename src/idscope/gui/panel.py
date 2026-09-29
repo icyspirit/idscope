@@ -893,6 +893,14 @@ class Panel(QtWidgets.QFrame):
             self._draw_spacetime()
         self._update_labels()
 
+    def step_image(self, delta: int) -> None:
+        """Show the next (or previous) image of the Show selector, round the end."""
+        count = self.image_selector.count()
+        if count > 1:
+            self.image_selector.setCurrentIndex(
+                (self.image_selector.currentIndex() + delta) % count
+            )
+
     def _selected_image(self) -> Optional[Curve]:
         if not self._image_curves:
             return None

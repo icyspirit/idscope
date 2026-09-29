@@ -105,8 +105,8 @@ A template saved with File → Save as becomes a configuration that can be edite
 | Shot field + Apply | **Sources** field + Apply: comma-separated sources, optionally `label=source` |
 | Expression (TDI) | Signal **path**, e.g. `equilibrium/time_slice/global_quantities/ip`, with scale and offset |
 | Browse signals | **IDS browser** (left): double-click or drag a quantity onto a panel |
-| Wave setup (double-click) | **Setup** dialog: double-click a panel |
-| Zoom / Point / Pan modes | **Pan** (default) / **Zoom** / **Point** in the toolbar |
+| Wave setup (double-click) | **Setup** dialog: double-click a panel (or Enter) |
+| Zoom / Point / Pan modes | **Pan** (default) / **Zoom** / **Point** in the toolbar (P, Z, C) |
 | Save / Load settings (`.jscp`) | File → Save / Open (YAML); the last session comes back by itself |
 
 - **Sources** are IDS netCDF files (`shot.nc`), IMAS URIs
@@ -116,7 +116,8 @@ A template saved with File → Save as becomes a configuration that can be edite
   **Zoom**: drag a rectangle. **Point**: click or drag in a time trace to set the
   time; the status bar shows the values of the current panel at that time.
 - The **time bar** at the bottom steps through the time slices of the profiles and
-  maps (also Ctrl+Left / Ctrl+Right). The dashed line in time traces can be dragged.
+  maps (also with the keys, see below). The dashed line in time traces can be
+  dragged.
 - Panels that show the same x quantity **share their x axis** (View → Share x axes):
   time across the window, a profile coordinate within a column. Stacked panels that
   share their x axis are drawn without gaps, and only the lowest shows the x values.
@@ -135,6 +136,35 @@ A template saved with File → Save as becomes a configuration that can be edite
   reads the data instead. Of long arrays of structures it reads only some elements
   (three time slices; sixteen coils, channels, ...), so a quantity filled in none of
   those is not listed, but can still be typed as a path.
+
+### Keyboard shortcuts
+
+Help → Keyboard shortcuts (F1) lists them. The single keys work on the panels, once
+one of them has the keyboard (click on it); text fields and the IDS browser keep the
+keys they use.
+
+| on the panels | |
+|---|---|
+| ↑ ↓ ← → | select the panel above, below, on the left or on the right (in the next column, the closest in height) |
+| , . | previous, next time slice |
+| P Z C | Pan, Zoom, Point mode |
+| A, Shift+A | autoscale the current panel, all panels |
+| Enter | setup of the current panel |
+| [ ] | previous, next image of the current panel (*Show*) |
+| Delete, Backspace | delete the signals of the current panel, then the empty panel |
+
+| anywhere | |
+|---|---|
+| Ctrl+← Ctrl+→, Ctrl+Home Ctrl+End | previous, next, first, last time slice |
+| Ctrl+L, Ctrl+F, Ctrl+T | go to the sources, the filter of the IDS browser, the time |
+| Esc | back to the panels |
+| Ctrl+Shift+↓, Ctrl+Shift+→ | add a panel below the current one, add a column |
+| Ctrl+Z, Ctrl+Shift+Z (Ctrl+Y) | undo, redo |
+| Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S | new, open, save, save as |
+| Ctrl+E, Ctrl+Q | export an image, quit |
+| Ctrl+B, F5, F11, F1 | IDS browser, reload the data, full screen, this list |
+
+On macOS, Ctrl is Cmd.
 
 ## Sessions
 
