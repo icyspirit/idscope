@@ -1,5 +1,6 @@
 """A plot panel: one cell of the scope grid (a "wave" in jScope)."""
 
+import html
 import logging
 from typing import List, NamedTuple, Optional, Tuple
 
@@ -13,7 +14,7 @@ from idscope.data import MAP, PROFILE, SHAPE, TRACE, Channels, MapSeries, Profil
 from idscope.data import Shapes, SignalData, parse_alternatives
 from idscope.data.extract import GEOMETRY, MARKERS, POINT
 from idscope.data.sources import DataSource
-from idscope.errors import IdscopeError
+from idscope.errors import IdscopeError, NoDataError
 from idscope.gui import style
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,9 @@ class Panel(QtWidgets.QFrame):
         """Resolved kind: trace, profile, map or spacetime (None if nothing loaded)."""
         self.curves: List[Curve] = []
         self.errors: List[str] = []
+        self.notes: List[str] = []
+        """What is not filled in a source (e.g. an IDS it does not have): said
+        softly, since sources often hold different IDSs."""
         self._time: Optional[float] = None
         self._mode = "pan"
         self._image_curves: List[Curve] = []
@@ -472,6 +476,7 @@ class Panel(QtWidgets.QFrame):
         self.kind = None
         self._one_time = None
         self.errors = []
+        self.notes = []
         self._image_curves = []
         self._image_time = self._title_time = None
         with QtCore.QSignalBlocker(self.image_selector):
@@ -482,11 +487,12 @@ class Panel(QtWidgets.QFrame):
         """Read all signals of this panel from ``sources`` and draw them.
 
         Returns:
-            Error messages for the signals that could not be shown.
+            Error messages for the signals that could not be shown; what is not
+            filled in a source goes to :attr:`notes`.
         """
         shown_image = self.image_selector.currentText()
         self.clear()
-        errors = []
+        errors, notes = [], []
         loaded = []
         for signal_index, signal in enumerate(self.config.signals):
             try:
@@ -500,6 +506,9 @@ class Panel(QtWidgets.QFrame):
                     continue
                 try:
                     data = source.first_signal(paths, x_paths)
+                except NoDataError as exc:
+                    notes.append(f"{source.label}: {exc}")
+                    continue
                 except IdscopeError as exc:
                     errors.append(f"{source.label}: {exc}")
                     continue
@@ -554,7 +563,7 @@ class Panel(QtWidgets.QFrame):
                 lambda line: self.timeRequested.emit(float(line.value()))
             )
             self.plot.addItem(self._time_line, ignoreBounds=True)
-        self.errors = errors
+        self.errors, self.notes = errors, notes
         # An empty legend would still draw its (white) box
         self.legend.setVisible(self.config.legend and bool(self.legend.items))
         self._show_message()
@@ -1116,11 +1125,22 @@ class Panel(QtWidgets.QFrame):
     # ------------------------------------------------------------------ labels
 
     def _update_title(self) -> None:
+        """The title, with the time of the data, and in gray how many signals are not
+        filled in some source (their notes when hovered)."""
         parts = [self.config.title] if self.config.title else []
         if self.kind in ("profile", "map") and self._title_time is not None:
             parts.append(f"t = {self._title_time:.4g} s")
-        text = "  ".join(parts)
-        self.title_item.setText(text)
+        text = html.escape("  ".join(parts)).replace("  ", "&nbsp; ")
+        tip = ""
+        if self.notes and self.curves:  # without curves, the message says it
+            n = len(self.notes)
+            note = f"{n} signal{'s' if n > 1 else ''} not filled"
+            text += (f"&nbsp;&nbsp; <span style='color: {style.NOTE_COLOR}; "
+                     f"font-weight: normal'>{note}</span>")
+            tip = "\n".join(self.notes)
+        self.title_item.setHtml(text)
+        for item in (self.title_item, self.title_item.textItem):
+            item.setToolTip(tip)
         self.title_item.setVisible(bool(text))
 
     def _update_labels(self) -> None:
@@ -1173,15 +1193,17 @@ class Panel(QtWidgets.QFrame):
 
     def _show_message(self) -> None:
         if not self.config.signals:
-            text, color, tip = _HINT, "#808080", ""
+            text, color, tip = _HINT, style.NOTE_COLOR, ""
         elif self.errors and not self.curves:
             text, color = self.errors[0], style.ERROR_COLOR
-            tip = "\n".join(self.errors)
+            tip = "\n".join(self.errors + self.notes)
         elif self.errors:
             n = len(self.errors)
             text = f"{n} signal{'s' if n > 1 else ''} not shown (hover for details)"
-            color, tip = style.ERROR_COLOR, "\n".join(self.errors)
-        else:
+            color, tip = style.ERROR_COLOR, "\n".join(self.errors + self.notes)
+        elif self.notes and not self.curves:
+            text, color, tip = self.notes[0], style.NOTE_COLOR, "\n".join(self.notes)
+        else:  # what is not filled is said in the title, if anything
             self.message.hide()
             return
         self.message.setText(text)

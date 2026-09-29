@@ -23,6 +23,8 @@ SYMBOLS = ["x", "+", "o", "t"]
 """Symbols of points (e.g. the magnetic axis), one per source."""
 TIME_LINE_COLOR = "#808080"
 ERROR_COLOR = "#c62828"
+NOTE_COLOR = "#808080"
+"""Of what is merely not there, e.g. an IDS that a source does not have."""
 CURRENT_PANEL_COLOR = "#1f77b4"
 COLORMAP = "viridis"
 CONTOUR_COLORMAP = "turbo"

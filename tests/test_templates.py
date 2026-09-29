@@ -53,7 +53,9 @@ def template_window(make_window):
 
 
 def errors_by_panel(window):
-    return {panel.config.title: panel.errors for panel in window.panels if panel.errors}
+    """What the panels do not show: errors, and what is not filled in a source."""
+    return {panel.config.title: panel.errors + panel.notes for panel in window.panels
+            if panel.errors or panel.notes}
 
 
 @pytest.mark.parametrize("name", template_names())
@@ -417,7 +419,7 @@ def test_free_boundary_template_on_a_solution(template_window, free_boundary_sol
     section, bars, *profiles = window.panels
     # the solver writes no wall
     assert set(errors_by_panel(window)) == {"Poloidal cross-section"}
-    assert "'wall'" in section.errors[0]
+    assert "'wall'" in section.notes[0] and not section.errors
     labels = [label.text for _, label in section.legend.items]
     assert labels == ["boundary", "X-points", "X-points to hold", "magnetic axis", "coils"]
     shapes = {c.label: c for c in section.curves}

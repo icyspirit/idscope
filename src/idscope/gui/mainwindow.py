@@ -619,40 +619,47 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def refresh_all(self) -> None:
         start = _time.perf_counter()
-        errors = []
+        errors, notes = [], []
         with _busy():
             sources = self.sources()
             for panel in self.panels:
-                errors += self._load_panel(panel, sources)
+                panel_errors, panel_notes = self._load_panel(panel, sources)
+                errors += panel_errors
+                notes += panel_notes
             self._update_time_grid()
             self._arrange_axes()
-        self._report(errors, _time.perf_counter() - start)
+        self._report(errors, notes, _time.perf_counter() - start)
 
     def refresh_panel(self, panel: Panel) -> None:
         start = _time.perf_counter()
         with _busy():
-            errors = self._load_panel(panel, self.sources())
+            errors, notes = self._load_panel(panel, self.sources())
             self._update_time_grid()
             self._arrange_axes()
-        self._report(errors, _time.perf_counter() - start)
+        self._report(errors, notes, _time.perf_counter() - start)
 
-    def _load_panel(self, panel: Panel, sources: List[DataSource]) -> List[str]:
+    def _load_panel(self, panel: Panel,
+                    sources: List[DataSource]) -> Tuple[List[str], List[str]]:
+        """Load a panel; returns its errors and what is not filled, for the log."""
         errors = panel.load(sources, self.time)
         name = panel.title()
-        return [f"[{name}] {error}" for error in errors]
+        return ([f"[{name}] {error}" for error in errors],
+                [f"[{name}] {note}" for note in panel.notes])
 
-    def _report(self, errors: List[str], seconds: float) -> None:
+    def _report(self, errors: List[str], notes: List[str], seconds: float) -> None:
         for source in self.config.sources:
             for note in self.pool.get(source).notes:
                 if note not in self._logged_notes:
                     self._logged_notes.add(note)
                     self.log(note)
-        for error in errors:
-            self.log(error)
+        for message in errors + notes:
+            self.log(message)
         n_curves = sum(len(panel.curves) for panel in self.panels)
         text = f"{n_curves} signals loaded in {seconds:.2f} s"
-        if errors:
-            text += f"; {len(errors)} not shown (see View → Log)"
+        counts = [f"{len(errors)} not shown"] if errors else []
+        counts += [f"{len(notes)} not filled"] if notes else []
+        if counts:
+            text += f"; {', '.join(counts)} (see View → Log)"
         self.status_label.setText(text)
 
     def log(self, message: str) -> None:

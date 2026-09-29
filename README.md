@@ -129,8 +129,10 @@ A template saved with File → Save as becomes a configuration that can be edite
 - **Undo** (Ctrl+Z) and **Redo** (Ctrl+Shift+Z) in the Edit menu take back changes of
   the panels (layout, signals, setup, sizes, shared x axes) and of the sources, and
   the scopes replaced by Open, New or a template. The time is not undone.
-- Signals that cannot be shown are reported in the panel (hover for details) and in
-  View → Log.
+- Signals that cannot be shown are reported in red in the panel (hover for details)
+  and in View → Log. What a source does not have (an IDS, or a quantity that is not
+  filled) is only noted, in gray on the title line of the panel, since sources often
+  hold different IDSs: the output of a code and the entry it was run on, for one.
 - The IDS browser asks the data entry which quantities are filled. Access Layers
   older than 5.7, and backends such as MDSplus and UDA, cannot tell: the browser then
   reads the data instead. Of long arrays of structures it reads only some elements
