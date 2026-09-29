@@ -1,5 +1,6 @@
 """A plot panel: one cell of the scope grid (a "wave" in jScope)."""
 
+import dataclasses
 import html
 import logging
 from typing import List, NamedTuple, Optional, Tuple
@@ -12,10 +13,12 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from idscope.config import PanelConfig, SignalConfig
 from idscope.data import MAP, PROFILE, SHAPE, TRACE, Channels, MapSeries, ProfileSeries
 from idscope.data import Shapes, SignalData, parse_alternatives
+from idscope.data.expressions import relative_to
 from idscope.data.extract import GEOMETRY, MARKERS, POINT
 from idscope.data.sources import DataSource
 from idscope.errors import IdscopeError, NoDataError
 from idscope.gui import style
+from idscope.gui.setup_dialog import RELATIVE_CHOICES
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +183,17 @@ def _mark_single_point(item, x, y) -> None:
         item.setSymbolPen(color)
 
 
+def _sources_of(entries, kept) -> List[Tuple[int, str]]:
+    """``(index, label)`` of the sources of the loaded entries whose data is
+    ``kept``, the label of their data rather than that of their shapes (e.g. the
+    "B − A" of a source compared with the first)."""
+    labels = {}
+    for _, _, source_index, label, data in entries:
+        if kept(data) and (source_index not in labels or not isinstance(data, Shapes)):
+            labels[source_index] = label
+    return sorted(labels.items())
+
+
 def _format(value: float) -> str:
     return f"{value:.5g}" if np.isfinite(value) else "nan"
 
@@ -235,6 +249,7 @@ class Panel(QtWidgets.QFrame):
         """The kind of a panel of time traces or time-space images whose data is all
         at one time, and which then shows it as it is at that time (see load)."""
         self._value_labels: List[object] = []  # values written on the bars
+        self._compared = False  # sources shown relative to the first (config.relative)
         self._labeled_heights: List[float] = []  # heights of the bars labeled
         self._bar_room = None  # an invisible line: the room the bars take
         self._member_colors: dict = member_colors if member_colors is not None else {}
@@ -475,6 +490,7 @@ class Panel(QtWidgets.QFrame):
             self._time_line = None
         self.kind = None
         self._one_time = None
+        self._compared = False
         self.errors = []
         self.notes = []
         self._image_curves = []
@@ -513,6 +529,8 @@ class Panel(QtWidgets.QFrame):
                     errors.append(f"{source.label}: {exc}")
                     continue
                 loaded.append((signal_index, signal, source_index, source.label, data))
+        if self.config.relative and len({entry[2] for entry in loaded}) > 1:
+            loaded = self._relative(loaded, errors)
 
         self.kind = self._resolve_kind(loaded)
         if self.kind in ("trace", "spacetime") and _at_one_time(loaded):
@@ -530,18 +548,23 @@ class Panel(QtWidgets.QFrame):
                 errors.append(f"{entry[3]}: {problem}")
             else:
                 accepted.append(entry)
-        sources_shown = sorted({(entry[2], entry[3]) for entry in accepted})
+        # A source compared with the first is named as that ("B − A") rather than
+        # as itself for its shapes; the line styles stand for the sources of the
+        # lines (the data of a map is an image)
+        sources_shown = _sources_of(accepted, lambda data: True)
+        line_sources = _sources_of(accepted, lambda data: not isinstance(data, MapSeries))
+        # Compared sources are named even alone ("B − A")
+        n_sources = max(len(sources_shown), 2 if self._compared else 1)
         n_signals = len(self.config.signals)
         if self._one_time == "trace":
             self._add_bars_at_one_time(accepted, sources_shown)
         else:
             for entry in accepted:
-                self._add_curves(*entry, n_sources=len(sources_shown),
-                                 n_signals=n_signals)
+                self._add_curves(*entry, n_sources=n_sources, n_signals=n_signals)
         if len(sources_shown) > 1 and self._styled_sources:
             # Colors tell the signals (or members) apart: say which line style is
             # which source
-            for source_index, source in sources_shown:
+            for source_index, source in line_sources:
                 proxy = pg.PlotDataItem(pen=style.source_pen(source_index))
                 self._legend_proxies.append(proxy)
                 self._legend_entries.append((proxy, source))
@@ -571,6 +594,35 @@ class Panel(QtWidgets.QFrame):
         self.set_time(time)
         self.apply_ranges()
         return errors
+
+    def _relative(self, loaded, errors: List[str]) -> list:
+        """Every source but the first as its difference with (or ratio to) the
+        first, signal by signal (see :attr:`PanelConfig.relative`). The first one is
+        then not shown; shapes, which cannot be compared, stay as they are."""
+        relative = self.config.relative
+        symbol = "−" if relative == "difference" else "/"
+        compared = []
+        for signal_index in sorted({entry[0] for entry in loaded}):
+            entries = [entry for entry in loaded if entry[0] == signal_index]
+            compared += [entry for entry in entries if isinstance(entry[4], Shapes)]
+            data = [entry for entry in entries if not isinstance(entry[4], Shapes)]
+            if len(data) < 2:
+                continue  # nothing to compare with: the others do not have it
+            reference = data[0]
+            for _, signal, source_index, label, values in data[1:]:
+                try:
+                    values = relative_to(values, reference[4], relative)
+                except IdscopeError as exc:
+                    errors.append(f"{label}: {exc}")
+                    continue
+                # The offset of the signal cancels out, and a ratio has no scale
+                signal = dataclasses.replace(
+                    signal, offset=0.0, scale=signal.scale if relative == "difference"
+                    else 1.0)
+                compared.append((signal_index, signal, source_index,
+                                 f"{label} {symbol} {reference[3]}", values))
+                self._compared = True
+        return compared
 
     def _resolve_kind(self, loaded) -> Optional[str]:
         if self.config.kind != "auto":
@@ -775,7 +827,7 @@ class Panel(QtWidgets.QFrame):
         voltages of the coils), the bars have a color per signal and source instead,
         as those of signals with wildcards otherwise do.
         """
-        n_sources = len(sources_shown)
+        n_sources = max(len(sources_shown), 2 if self._compared else 1)
         rank = {index: k for k, (index, _) in enumerate(sources_shown)}
         bars, signals_of = [], {}
         for signal_index, signal, source_index, source, data in accepted:
@@ -1279,6 +1331,31 @@ class Panel(QtWidgets.QFrame):
                 menu.addSeparator()
             else:
                 menu.addAction(text).triggered.connect(slot)
+        # The sources as they are, or relative to the first
+        compare = menu.addMenu("Sources")
+        self._relative_actions = []
+        for text, value in RELATIVE_CHOICES:
+            action = compare.addAction(text)
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked=False, value=value:
+                                     self.set_relative(value))
+            self._relative_actions.append((action, value))
+        compare.aboutToShow.connect(self._check_relative)
+        self._check_relative()
+
+    def _check_relative(self) -> None:
+        for action, value in self._relative_actions:
+            action.setChecked(value == self.config.relative)
+
+    def set_relative(self, relative: Optional[str]) -> None:
+        """Show the sources as they are (``None``), or every one but the first as its
+        ``difference`` with the first or its ``ratio`` to it."""
+        self._check_relative()
+        if relative == self.config.relative:
+            return
+        self.config.relative = relative
+        self._check_relative()
+        self.signalsChanged.emit(self, "compare sources")
 
     # ------------------------------------------------------------- drag & drop
 

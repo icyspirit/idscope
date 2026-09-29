@@ -11,6 +11,12 @@ from idscope.errors import IdscopeError
 
 COLUMNS = ["Path", "Label", "Scale", "Offset", "X path", "Color", "Sources"]
 _PATH, _LABEL, _SCALE, _OFFSET, _X, _COLOR, _SOURCES = range(len(COLUMNS))
+RELATIVE_CHOICES = [
+    ("as they are", None),
+    ("minus the first (B − A)", "difference"),
+    ("over the first (B / A)", "ratio"),
+]
+"""How the panel shows the sources: the texts of the choices and their values."""
 
 
 class SetupDialog(QtWidgets.QDialog):
@@ -59,6 +65,18 @@ class SetupDialog(QtWidgets.QDialog):
             "Draw maps and time-space images as this many contour lines instead of an "
             "image (0: image)"
         )
+        self.relative = QtWidgets.QComboBox()
+        for text, value in RELATIVE_CHOICES:
+            self.relative.addItem(text, value)
+        self.relative.setCurrentIndex(
+            next((i for i, (_, value) in enumerate(RELATIVE_CHOICES)
+                  if value == config.relative), 0))
+        self.relative.setToolTip(
+            "With several sources, show every source but the first relative to the\n"
+            "first, signal by signal: their difference or their ratio, on the times\n"
+            "and the grid of each source (the first is interpolated). Shapes stay as\n"
+            "they are. The scale still applies to a difference; the offset does not."
+        )
 
         form.addWidget(QtWidgets.QLabel("Title"), 0, 0)
         form.addWidget(self.title, 0, 1, 1, 3)
@@ -78,6 +96,9 @@ class SetupDialog(QtWidgets.QDialog):
         checks.addSpacing(12)
         checks.addWidget(QtWidgets.QLabel("contours"))
         checks.addWidget(self.contours)
+        checks.addSpacing(12)
+        checks.addWidget(QtWidgets.QLabel("sources"))
+        checks.addWidget(self.relative)
         checks.addStretch(1)
         form.addLayout(checks, 3, 1, 1, 5)
         layout.addLayout(form)
@@ -102,7 +123,10 @@ class SetupDialog(QtWidgets.QDialog):
                    "Alternatives, tried in order: path_a | path_b\n"
                    "norm(path): profiles normalized from their first to last point\n"
                    "transpose(path, 1, 0, 2): the dimensions in another order\n"
-                   "(numpy style; reversed without axes)",
+                   "(numpy style; reversed without axes)\n"
+                   "Arithmetic: path_a - path_b, path_a / path_b (spaces around /),\n"
+                   "2 * path, deriv(path), abs(path); the second signal is taken on\n"
+                   "the times and the grid of the first",
             _SCALE: "plotted value = value × scale + offset",
             _OFFSET: "plotted value = value × scale + offset",
             _X: "x values of a profile (default: its coordinate), "
@@ -276,6 +300,7 @@ class SetupDialog(QtWidgets.QDialog):
             equal_aspect=self.equal_aspect.isChecked(),
             contours=self.contours.value(),
             height=self.config.height,
+            relative=self.relative.currentData(),
         )
 
     def apply(self) -> bool:

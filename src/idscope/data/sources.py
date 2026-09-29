@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 import imas
 from imas.ids_data_type import IDSDataType
 
+from idscope.data.expressions import Expression
 from idscope.data.extract import SignalData, apply_x, extract_signal, is_time_aos
 from idscope.data.paths import SignalPath
 from idscope.errors import IdscopeError, NoDataError, PathError, SourceError
@@ -299,7 +300,9 @@ class DataSource:
         cached = self._signals.get(key)
         if cached is None:
             try:
-                if x_path is None:
+                if x_path is None and isinstance(path, Expression):
+                    cached = path.evaluate(self.signal)  # of paths, which are cached
+                elif x_path is None:
                     ids = self.get_ids(path.ids_name, path.occurrence)
                     cached = extract_signal(ids, path)
                 else:  # both are cached: x is often shared by many signals
