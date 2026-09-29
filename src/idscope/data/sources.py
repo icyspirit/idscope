@@ -14,12 +14,20 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import imas
+from imas.ids_data_type import IDSDataType
 
-from idscope.data.extract import SignalData, apply_x, extract_signal
+from idscope.data.extract import SignalData, apply_x, extract_signal, is_time_aos
 from idscope.data.paths import SignalPath
 from idscope.errors import IdscopeError, NoDataError, PathError, SourceError
 
 logger = logging.getLogger(__name__)
+
+TIME_SAMPLES = 3
+"""Time slices read to find the filled quantities of an IDS when the data entry
+cannot list them: the first, the middle and the last."""
+ELEMENT_SAMPLES = 16
+"""Elements read of the other arrays of structures (e.g. coils, channels), spread
+over the array when it is longer."""
 
 _ALIAS = re.compile(r"([A-Za-z_][\w.\-]*)\s*=\s*(.+)", re.DOTALL)
 
@@ -159,6 +167,8 @@ class DataSource:
         self._autoconvert: Dict[Tuple[str, int], bool] = {}
         self._available: Optional[List[Tuple[str, int]]] = None
         self._filled: Dict[Tuple[str, int], List[str]] = {}
+        self.listing_notes: Dict[Tuple[str, int], str] = {}
+        """Why the filled quantities of an IDS were found by reading the data."""
         self._signals: Dict[tuple, Union[SignalData, IdscopeError]] = {}
         self.notes: List[str] = []
         """Informational messages, e.g. about Data Dictionary conversions."""
@@ -246,19 +256,35 @@ class DataSource:
         return self._available
 
     def filled_paths(self, ids_name: str, occurrence: int = 0) -> List[str]:
-        """Data Dictionary paths (without indices) that hold data."""
+        """Data Dictionary paths (without indices) that hold data.
+
+        Data entries that cannot list them (Access Layer < 5.7, or backends such as
+        MDSplus and UDA) are read instead, see :func:`read_filled_paths`.
+        """
         key = (ids_name, occurrence)
         if key not in self._filled:
-            self.get_ids(ids_name, occurrence)  # determines autoconvert
+            ids = self.get_ids(ids_name, occurrence)  # also determines autoconvert
             try:
                 paths = self.entry.list_filled_paths(
                     ids_name, occurrence, autoconvert=self._autoconvert[key]
                 )
             except Exception as exc:
-                raise SourceError(
-                    f"Cannot list the filled quantities of '{ids_name}' in "
-                    f"'{self.label}': {exc}"
-                ) from exc
+                logger.info("Cannot list the filled paths of %s: %s", ids_name, exc)
+                try:
+                    paths = read_filled_paths(ids)
+                except Exception as read_exc:
+                    raise SourceError(
+                        f"Cannot list the filled quantities of '{ids_name}' in "
+                        f"'{self.label}' ({exc}), nor read them: {read_exc}"
+                    ) from read_exc
+                self.listing_notes[key] = (
+                    f"'{self.label}' cannot list its filled quantities ({exc}). "
+                    "They were found by reading the data, of which only some "
+                    "elements of long arrays of structures: a quantity filled in "
+                    "none of those is not listed."
+                )
+                if self.listing_notes[key] not in self.notes:
+                    self.notes.append(self.listing_notes[key])
             self._filled[key] = sorted(paths)
         return self._filled[key]
 
@@ -328,6 +354,7 @@ class DataSource:
         self._autoconvert.clear()
         self._available = None
         self._filled.clear()
+        self.listing_notes.clear()
         self._signals.clear()
         self.notes.clear()
         if self._entry is not None:
@@ -336,6 +363,42 @@ class DataSource:
             except Exception:  # pragma: no cover - closing errors are not actionable
                 logger.debug("Error while closing %s", self.uri, exc_info=True)
             self._entry = None
+
+
+def _spread(n: int, count: int) -> List[int]:
+    """Up to ``count`` indices spread over ``range(n)``, with the first and last."""
+    if n <= count:
+        return list(range(n))
+    return sorted({round(i * (n - 1) / (count - 1)) for i in range(count)})
+
+
+def read_filled_paths(ids) -> List[str]:
+    """Data Dictionary paths (without indices) that hold data, found by reading them.
+
+    For data entries that cannot list them. Of long arrays of structures only some
+    elements are read, spread over the array: :data:`TIME_SAMPLES` time slices and
+    :data:`ELEMENT_SAMPLES` elements of the others. A quantity that is filled in none
+    of the elements read is missed.
+
+    Args:
+        ids: an IDS, best lazily loaded, so that only what is read is loaded.
+    """
+    found = set()
+
+    def visit(structure) -> None:
+        for child in structure:  # a lazily loaded leaf is read here
+            meta = child.metadata
+            if meta.data_type is IDSDataType.STRUCTURE:
+                visit(child)
+            elif meta.data_type is IDSDataType.STRUCT_ARRAY:
+                count = TIME_SAMPLES if is_time_aos(meta) else ELEMENT_SAMPLES
+                for index in _spread(len(child), count):
+                    visit(child[index])
+            elif child.has_value:
+                found.add(meta.path_string)
+
+    visit(ids)
+    return sorted(found)
 
 
 class SourcePool:

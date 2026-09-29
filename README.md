@@ -106,6 +106,11 @@ A template saved with File → Save as becomes a configuration that can be edite
   and pyqtgraph's *Export…* (PNG, SVG, CSV of the curves).
 - Signals that cannot be shown are reported in the panel (hover for details) and in
   View → Log.
+- The IDS browser asks the data entry which quantities are filled. Access Layers
+  older than 5.7, and backends such as MDSplus and UDA, cannot tell: the browser then
+  reads the data instead. Of long arrays of structures it reads only some elements
+  (three time slices; sixteen coils, channels, ...), so a quantity filled in none of
+  those is not listed, but can still be typed as a path.
 
 ## Sessions
 

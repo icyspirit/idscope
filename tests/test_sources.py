@@ -120,3 +120,35 @@ def test_pool(data_dir):
     pool.keep_only([])
     assert pool.sources() == []
     pool.close()
+
+
+@pytest.mark.parametrize("name", ["a.nc", "h5"])
+def test_filled_paths_read_when_they_cannot_be_listed(data_dir, name, old_access_layer):
+    source = DataSource(parse_source(str(data_dir / name)))
+    for ids_name in ("core_profiles", "equilibrium", "pf_active", "wall"):
+        listed = old_access_layer(source.entry, ids_name)  # the real listing
+        assert source.filled_paths(ids_name) == sorted(listed)
+    assert "Access Layer version 5.7" in source.listing_notes[("core_profiles", 0)]
+    assert sum("cannot list its filled quantities" in note for note in source.notes) == 1
+    source.close()
+
+
+def test_read_filled_paths_samples_long_arrays():
+    import imas
+
+    from idscope.data.sources import _spread, read_filled_paths
+
+    assert _spread(3, 16) == [0, 1, 2]
+    assert _spread(41, 3) == [0, 20, 40]
+    assert len(_spread(100, 16)) == 16 and _spread(100, 16)[-1] == 99
+
+    cp = imas.IDSFactory().core_profiles()
+    cp.ids_properties.homogeneous_time = 1
+    cp.time = [0.0, 1.0, 2.0, 3.0, 4.0]
+    cp.profiles_1d.resize(5)
+    cp.profiles_1d[1].zeff = [1.5]  # a time slice that is not read
+    cp.profiles_1d[2].ion.resize(3)
+    cp.profiles_1d[2].ion[1].temperature = [1.0]  # every ion is read
+    assert read_filled_paths(cp) == [
+        "ids_properties/homogeneous_time", "profiles_1d/ion/temperature", "time",
+    ]

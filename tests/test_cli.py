@@ -106,3 +106,10 @@ def test_export_with_the_last_session(tmp_path, data_dir):
     assert main([str(data_dir / "a.nc"), "-e", str(image), "--size", "900x600"]) == 0
     assert image.stat().st_size > 10000
     assert session_path().read_text() == before  # an export leaves the session alone
+
+
+def test_list_quantities_when_they_cannot_be_listed(data_dir, capsys, old_access_layer):
+    assert main(["--list", str(data_dir / "h5"), "core_profiles"]) == 0
+    out, err = capsys.readouterr()
+    assert "profile   core_profiles/profiles_1d/electrons/temperature" in out
+    assert "cannot list its filled quantities" in err
