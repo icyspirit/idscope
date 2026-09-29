@@ -26,12 +26,8 @@ def config_path(tmp_path, data_dir):
 
 
 @pytest.fixture
-def window(qtbot, config_path):
-    from idscope.gui import create_application, create_window
-
-    create_application()
-    win = create_window(load_config(config_path), config_path, time=3.0)
-    qtbot.addWidget(win)
+def window(make_window, config_path):
+    win = make_window(load_config(config_path), config_path, time=3.0)
     win.resize(1200, 800)
     win.show()
     return win
@@ -400,13 +396,10 @@ def test_recent_files(window, config_path, tmp_path, monkeypatch):
     assert window.recent_files == [] and not window.recent_menu.isEnabled()
 
 
-def test_session_and_settings(qtbot, config_path):
-    from idscope.gui import create_application, create_window
+def test_session_and_settings(qtbot, make_window, config_path):
     from idscope.session import load_session, session_path
 
-    create_application()
-    first = create_window(load_config(config_path), config_path, persist=True)
-    qtbot.addWidget(first)
+    first = make_window(load_config(config_path), config_path, persist=True)
     first.resize(760, 560)
     first.show()
     size = first.size()
@@ -426,9 +419,8 @@ def test_session_and_settings(qtbot, config_path):
     assert session.config.time == 4.0
     assert len(session.config.panels()) == len(KINDS) - 1
 
-    second = create_window(session.config, session.config_path,
-                           modified=session.modified, persist=True)
-    qtbot.addWidget(second)
+    second = make_window(session.config, session.config_path,
+                         modified=session.modified, persist=True)
     second.show()
     assert second.isWindowModified()
     assert len(second.panels) == len(KINDS) - 1
@@ -461,14 +453,10 @@ def test_sizes_are_kept_until_dragged(window, tmp_path):
     assert widths[1] / widths[0] == pytest.approx(7 / 3, rel=0.02)
 
 
-def test_time_of_the_configuration(qtbot, config_path):
-    from idscope.gui import create_application, create_window
-
-    create_application()
+def test_time_of_the_configuration(make_window, config_path):
     config = load_config(config_path)
     config.time = 7.0
-    win = create_window(config, config_path)
-    qtbot.addWidget(win)
+    win = make_window(config, config_path)
     assert win.time == 7.0
     assert win.panels[0]._time_line.value() == 7.0
     # the time bar shows it too
@@ -639,3 +627,21 @@ def test_a_drag_after_a_save_is_undone_on_its_own(window, tmp_path):
     assert window.isWindowModified()
     window.undo()
     assert not window.isWindowModified()  # back to the saved sizes
+
+
+def test_members_have_one_color_in_the_window(window):
+    window.change_layout(window.panels[2], "add_below")
+    loops = window.current_panel
+    loops.add_signal("magnetics/flux_loop[:]/flux/data")
+    window.change_layout(loops, "add_below")
+    some = window.current_panel
+    some.add_signal("magnetics/flux_loop[1:]/flux/data")  # without FL1
+
+    def colors(panel):
+        return {c.name: c.item.opts["pen"].color().name() for c in panel.curves}
+
+    all_loops = colors(loops)
+    assert colors(some) == {name: all_loops[name] for name in colors(some)}
+    # a scope shown afterwards starts again from the first color
+    window.new_from_template("pf_active")
+    assert window.member_colors[("coil", "CS3U", None)] == 0

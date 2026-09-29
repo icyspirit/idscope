@@ -651,11 +651,17 @@ def _members(ids, plan: _Plan) -> List[Tuple[Dict[int, int], str]]:
 
     walk(ids, 0, (), ())
     members = []
+    seen: Dict[str, int] = {}
     for key in sorted(found):
         labels = found[key]
         # Levels with a single element (e.g. coils of one element) add nothing
         shown = [name for name, count in labels if count > 1] or [labels[-1][0]]
-        members.append((dict(zip(plan.channels, key)), "/".join(shown)))
+        name = "/".join(shown)
+        # Elements can share a name, e.g. two core_sources both "nbi": nbi, nbi#2
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > 1:
+            name = f"{name}#{seen[name]}"
+        members.append((dict(zip(plan.channels, key)), name))
     return members
 
 

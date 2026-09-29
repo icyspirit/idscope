@@ -227,6 +227,96 @@ def pf_active(factory, scale: float = 1.0, n_time: int = N_TIME,
     return pf
 
 
+def _switch_on(t: np.ndarray, t_on: float) -> np.ndarray:
+    """0 before ``t_on``, rising to 1 within a second."""
+    return 0.5 + 0.5 * np.tanh((t - t_on - 0.5) / 0.2)
+
+
+def _identify(source, name: str) -> None:
+    """Set the identifier of a core source from the Data Dictionary's list."""
+    from imas.ids_identifiers import identifiers
+
+    member = identifiers.core_source_identifier[name]
+    source.identifier.name = member.name
+    source.identifier.index = member.index
+    source.identifier.description = member.description
+
+
+def core_sources(factory, scale: float = 1.0, n_time: int = N_TIME):
+    """core_sources: a neutral beam from 3 s, electron cyclotron waves from 5 s,
+    ohmic heating that fades once the current has ramped up, and the collisional
+    exchange from the electrons to the ions. Each has its profiles and totals."""
+    from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
+
+    cs = factory.core_sources()
+    cs.ids_properties.homogeneous_time = IDS_TIME_MODE_HOMOGENEOUS
+    t = np.linspace(0.0, 10.0, n_time)
+    cs.time = t
+    rho = np.linspace(0.0, 1.0, N_RHO)
+    ramp = np.minimum(t / 2.0, 1.0)
+    on = {
+        "nbi": scale * _switch_on(t, 3.0),
+        "ec": scale * _switch_on(t, 5.0),
+        "ohmic": scale * ramp * (0.3 + 0.7 * np.exp(-np.maximum(t - 2.0, 0.0) / 2.0)),
+        "collisional_equipartition": scale * ramp * (0.2 + 0.8 * _switch_on(t, 3.0)),
+    }
+
+    def gauss(center: float, width: float) -> np.ndarray:
+        return np.exp(-(((rho - center) / width) ** 2))
+
+    # Profiles at full power: heating of the electrons and the ions [W m^-3],
+    # particles [m^-3 s^-1], current [A m^-2] and torque [N m^-2] densities
+    shapes = {
+        "nbi": dict(electrons=0.25e6 * gauss(0.0, 0.45), ions=0.45e6 * gauss(0.0, 0.4),
+                    particles=1.5e19 * gauss(0.0, 0.5), current=0.15e6 * gauss(0.0, 0.35),
+                    torque=0.8 * gauss(0.0, 0.45)),
+        "ec": dict(electrons=1.2e6 * gauss(0.3, 0.06), current=0.25e6 * gauss(0.32, 0.05)),
+        "ohmic": dict(electrons=0.15e6 * (1.0 - rho**2) ** 3,
+                      current=1.2e6 * (1.0 - rho**2) ** 1.5),
+        "collisional_equipartition": dict(electrons=-0.1e6 * (1.0 - rho**2) ** 2,
+                                          ions=0.1e6 * (1.0 - rho**2) ** 2),
+    }
+    # Totals at full power: power to the electrons and to the ions [W], driven
+    # current [A] and torque [N m]
+    totals = {
+        "nbi": dict(electrons=2.0e6, ions=3.0e6, current=0.15e6, torque=4.0),
+        "ec": dict(electrons=3.0e6, current=0.1e6),
+        "ohmic": dict(electrons=1.5e6, current=0.8e6),
+        "collisional_equipartition": dict(electrons=-0.5e6, ions=0.5e6),
+    }
+    cs.source.resize(len(on))
+    for source, name in zip(cs.source, on):
+        _identify(source, name)
+        amplitude, shape, total = on[name], shapes[name], totals[name]
+        source.profiles_1d.resize(n_time)
+        source.global_quantities.resize(n_time)
+        for i in range(n_time):
+            p1d = source.profiles_1d[i]
+            p1d.time = t[i]
+            p1d.grid.rho_tor_norm = rho
+            p1d.grid.psi = 20.0 * rho**2
+            a = amplitude[i]
+            p1d.electrons.energy = a * shape["electrons"]
+            if "ions" in shape:
+                p1d.total_ion_energy = a * shape["ions"]
+            if "particles" in shape:
+                p1d.electrons.particles = a * shape["particles"]
+            if "current" in shape:
+                p1d.j_parallel = a * shape["current"]
+            if "torque" in shape:
+                _set_first(p1d, ("momentum_phi", "momentum_tor"), a * shape["torque"])
+            gq = source.global_quantities[i]
+            gq.time = t[i]
+            gq.electrons.power = a * total["electrons"]
+            gq.total_ion_power = a * total.get("ions", 0.0)
+            gq.power = a * (total["electrons"] + total.get("ions", 0.0))
+            if "current" in total:
+                gq.current_parallel = a * total["current"]
+            if "torque" in total:
+                _set_first(gq, ("torque_phi", "torque_tor"), a * total["torque"])
+    return cs
+
+
 def wall(factory):
     """wall: a D-shaped first wall around the plasma, as one limiter unit."""
     from imas.ids_defs import IDS_TIME_MODE_INDEPENDENT
@@ -269,7 +359,8 @@ def write_entry(uri: str, scale: float = 1.0, dd_version: Optional[str] = None,
         for ids in (core_profiles(factory, scale, rho_tor_norm=rho_tor_norm),
                     equilibrium(factory, scale, rho_tor_norm=rho_tor_norm),
                     magnetics(factory, scale), summary(factory, scale),
-                    pf_active(factory, scale), wall(factory)):
+                    pf_active(factory, scale), wall(factory),
+                    core_sources(factory, scale)):
             entry.put(ids)
 
 

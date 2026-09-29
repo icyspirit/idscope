@@ -148,6 +148,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pool = SourcePool(self.config.dd_version)
         self.panels: List[Panel] = []
         self.current_panel: Optional[Panel] = None
+        self.member_colors: dict = {}
+        """Colors of the members of signals with wildcards (see Panel)."""
         self.time: Optional[float] = self.config.time
         self.mode = self._setting("mode", "pan")
         if self.mode not in MODES:
@@ -401,7 +403,7 @@ class MainWindow(QtWidgets.QMainWindow):
             panel.set_mode(self.mode)
 
     def _create_panel(self, config: PanelConfig) -> Panel:
-        panel = Panel(config)
+        panel = Panel(config, member_colors=self.member_colors)
         panel.activated.connect(self.set_current_panel)
         panel.timeRequested.connect(self.set_time)
         panel.setupRequested.connect(self.open_setup)
@@ -752,6 +754,7 @@ class MainWindow(QtWidgets.QMainWindow):
         with QtCore.QSignalBlocker(self.share_x_action):
             self.share_x_action.setChecked(config.share_x)
         self._show_sources()
+        self.member_colors.clear()  # the members of this scope, from the first color
         self.build_panels()
         panel = self._panel_at(current)
         if panel is not None:

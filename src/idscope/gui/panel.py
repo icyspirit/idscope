@@ -154,7 +154,13 @@ class Panel(QtWidgets.QFrame):
     ``(panel, description of the change)``."""
     hoverMessage = QtCore.Signal(str)
 
-    def __init__(self, config: PanelConfig, parent=None):
+    def __init__(self, config: PanelConfig, parent=None, member_colors=None):
+        """
+        Args:
+            member_colors: colors of the members of signals with wildcards, shared
+                by the panels of a window so that e.g. a coil has the same color in
+                all of them: ``(what, name, signal) -> color index``.
+        """
         super().__init__(parent)
         self.config = config
         self.kind: Optional[str] = None
@@ -173,7 +179,7 @@ class Panel(QtWidgets.QFrame):
         self._time_line = None
         self._bars: List[Curve] = []  # members of wildcard traces, as bars per element
         self._categories: List[str] = []  # the elements the bars stand for
-        self._member_colors: dict = {}  # (signal index, member name) -> color index
+        self._member_colors: dict = member_colors if member_colors is not None else {}
         self._legend_entries: List[Tuple[object, str]] = []
         self._legend_proxies: List[object] = []  # legend samples of the line styles
         self._styled_sources = False  # sources are told apart by line style
@@ -380,7 +386,6 @@ class Panel(QtWidgets.QFrame):
         self._named_signals = set()
         self._bars = []
         self._categories = []
-        self._member_colors = {}
         self.plot.getAxis("bottom").setTicks(None)
         self._remove_image()
         if self._time_line is not None:
@@ -531,7 +536,10 @@ class Panel(QtWidgets.QFrame):
                                           signal.color)
                     label = (base if styled else base + suffix) if k == 0 else None
                 else:
-                    key = (signal_index, member_name)
+                    # the same member, e.g. "source nbi", has one color in the window;
+                    # in a panel with several signals, a color per signal
+                    key = (data.axis_label, member_name,
+                           signal_index if n_signals > 1 else None)
                     color = self._member_colors.setdefault(key, len(self._member_colors))
                     pen = style.member_pen(color, source_index, signal.color)
                     label = name

@@ -1,0 +1,66 @@
+# idscope template: the sources of the core_sources IDS.
+#
+#   idscope -T core_sources SOURCE [SOURCE ...]
+#
+# "source[:]" draws every source (a neutral beam, EC waves, ohmic heating, ...) as a
+# curve or a bar named after its identifier. The profiles on the left are at the
+# selected time; the totals on the right are over time, and as bars at that time.
+# Paths separated by "|" are alternatives, tried in order: Data Dictionary 4 names
+# the toroidal components "phi" and Data Dictionary 3 "tor". Codes that give only
+# the profiles, as a beam deposition code does, leave the totals empty.
+title: core_sources
+columns:
+  # Profiles at the selected time
+  - width: 1.3
+    panels:
+      - title: Electron heating
+        signals:
+          - path: core_sources/source[:]/profiles_1d/electrons/energy
+            x: &x core_sources/source[:]/profiles_1d/grid/rho_tor_norm | norm(core_sources/source[:]/profiles_1d/grid/psi) | core_sources/source[:]/profiles_1d/grid/rho_pol_norm
+            scale: 1.0e-6
+        y_label: Q_e [MW m^-3]
+      - title: Ion heating
+        signals:
+          - path: core_sources/source[:]/profiles_1d/total_ion_energy
+            x: *x
+            scale: 1.0e-6
+        y_label: Q_i [MW m^-3]
+      - title: Current density
+        signals:
+          - path: core_sources/source[:]/profiles_1d/j_parallel
+            x: *x
+            scale: 1.0e-6
+        y_label: j_par [MA m^-2]
+      - title: Particle source
+        signals:
+          - path: core_sources/source[:]/profiles_1d/electrons/particles
+            x: *x
+            scale: 1.0e-19
+        y_label: S_e [1e19 m^-3 s^-1]
+      - title: Torque density
+        signals:
+          - path: core_sources/source[:]/profiles_1d/momentum_phi | core_sources/source[:]/profiles_1d/momentum_tor
+            x: *x
+        y_label: torque [N m^-2]
+  # Totals over time, and at the selected time
+  - panels:
+      - title: Power
+        signals:
+          - path: core_sources/source[:]/global_quantities/power
+            scale: 1.0e-6
+        y_label: P [MW]
+      - title: Driven current
+        signals:
+          - path: core_sources/source[:]/global_quantities/current_parallel
+            scale: 1.0e-6
+        y_label: I_par [MA]
+      - title: Torque
+        signals:
+          - path: core_sources/source[:]/global_quantities/torque_phi | core_sources/source[:]/global_quantities/torque_tor
+        y_label: torque [N m]
+      - title: Power at the selected time
+        kind: profile
+        signals:
+          - path: core_sources/source[:]/global_quantities/power
+            scale: 1.0e-6
+        y_label: P [MW]

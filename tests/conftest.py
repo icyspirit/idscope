@@ -67,3 +67,27 @@ def old_access_layer(monkeypatch):
     real = imas.DBEntry.list_filled_paths
     monkeypatch.setattr(imas.DBEntry, "list_filled_paths", list_filled_paths)
     return real
+
+
+@pytest.fixture
+def make_window(qtbot):
+    """Create main windows, which stay referenced until the end of the test.
+
+    pytest-qt only keeps weak references to widgets, and processes events after the
+    test function returns. A window referenced by nothing else could then be
+    collected while it is being painted, which with PyQt5 destroys it mid-paint
+    and crashes.
+    """
+    pytest.importorskip("pyqtgraph.Qt")
+    from idscope.gui import create_application, create_window
+
+    create_application()
+    windows = []
+
+    def make(*args, **kwargs):
+        window = create_window(*args, **kwargs)
+        qtbot.addWidget(window)
+        windows.append(window)
+        return window
+
+    yield make

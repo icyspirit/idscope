@@ -14,7 +14,7 @@ viewer for [IMAS](https://imas.iter.org) IDS data. It reads data with
 - an IDS browser that lists the quantities filled in a source,
 - configurations saved as YAML, which can be applied to other data,
 - the last session back when idscope starts again: panels, sources and time,
-- templates for `core_profiles`, `equilibrium` and `pf_active`.
+- templates for `core_profiles`, `core_sources`, `equilibrium` and `pf_active`.
 
 ![idscope showing two synthetic data sources](docs/idscope-demo.png)
 
@@ -66,6 +66,7 @@ prints their names.
 | template | shows |
 |---|---|
 | `core_profiles` | Ip, central Te/Ti/ne, loop voltage, li and beta over time; Te/Ti, ne/ni, q, current densities and Zeff profiles; Te and ne against (t, x) |
+| `core_sources` | for every source (beams, waves, ohmic, ...): profiles of electron and ion heating, current density, particles and torque density; power, driven current and torque over time; the power at the selected time, as bars |
 | `equilibrium` | profiles: q, pressure, current densities (j_phi, j_parallel), dp/dpsi, FF', elongation and triangularities |
 | `pf_active` | current and voltage of every coil over time; the coil currents at the selected time, as bars; the coils in the poloidal plane, with the flux surfaces, the plasma boundary, the magnetic axis and the wall |
 
@@ -73,12 +74,16 @@ Profiles are drawn against rho_tor_norm or, when it is not filled, against the
 normalized poloidal flux psi_n (`psi_norm` if filled, otherwise `norm(psi)`, see
 below). The templates work with Data Dictionary 3 and 4 data thanks to alternative
 paths. Panels whose quantities are not filled in a source say so, e.g. the coil
-voltages of a pf_active written by an equilibrium code, which only has currents.
+voltages of a pf_active written by an equilibrium code, which only has currents, or
+the totals of a core_sources written by a beam deposition code, which only has
+profiles.
 A template saved with File → Save as becomes a configuration that can be edited.
 
 ![equilibrium template on the ITER 134173/106 training data](docs/template-equilibrium.png)
 
 ![pf_active template comparing two synthetic sources](docs/template-pf_active.png)
+
+![core_sources template comparing two synthetic sources](docs/template-core_sources.png)
 
 ## Using the scope
 
@@ -180,7 +185,9 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
   for some of them (Fortran ranges `(a:b)` include both ends). A path with wildcards
   has a member per element, named after its `name` (or `label`, `identifier`): a
   curve per coil in time traces, a bar per coil at the selected time in a profile
-  panel. Wildcards can be nested (`coil[:]/element[:]`).
+  panel. Elements with the same name are told apart as `nbi`, `nbi#2`, and a member
+  has the same color in all the panels of the window. Wildcards can be nested
+  (`coil[:]/element[:]`).
 - An index applies to the node it is written on. On the data node it selects numpy
   style along the dimensions of the data, for every element of the wildcards: so
   `coil[:]/current/data[2]` is the third current sample of every coil (a bar per
