@@ -1187,6 +1187,8 @@ def apply_x(data: SignalData, x_data: SignalData) -> SignalData:
                 f"'{x_data.path.text}' and '{data.path.text}' have different lengths "
                 f"({len(x)} and {len(y)}) in slice {i}."
             )
+    # a slice without values (e.g. a quantity that is not filled yet) has no x either
+    new_xs = [x if len(y) else np.empty(0) for x, y in zip(new_xs, data.ys)]
     x_axis = Axis(x_data.path.name, x_data.value_axis.units)
     return ProfileSeries(
         data.path, data.time, new_xs, data.ys, x_axis, data.value_axis,

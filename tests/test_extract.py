@@ -78,7 +78,11 @@ def test_profile_with_missing_slices(source_a):
     assert isinstance(data, ProfileSeries)
     assert [len(y) for y in data.ys[-4:]] == [51, 0, 0, 0]
     x, y, t = data.at(10.0)
-    assert len(y) == 0 and t == pytest.approx(10.0)
+    assert len(x) == len(y) == 0 and t == pytest.approx(10.0)
+    # also with the x values of a path, which has them
+    data = get(source_a, "core_profiles/profiles_1d/ion[1]/temperature",
+               x="core_profiles/profiles_1d/grid/rho_tor_norm")
+    assert [len(x) for x in data.xs[-4:]] == [51, 0, 0, 0]
 
 
 def test_profile_non_rho_coordinate(source_a):
