@@ -24,19 +24,13 @@ def test_unknown_template():
 
 
 @pytest.fixture
-def template_window(qtbot):
-    pytest.importorskip("pyqtgraph.Qt")
-    from idscope.gui import create_application, create_window
-
-    create_application()
-
+def template_window(make_window):
     def make(name, sources):
         from idscope.data.sources import parse_source
 
         config = load_template(name)
         config.sources = [parse_source(str(s)) for s in sources]
-        win = create_window(config)
-        qtbot.addWidget(win)
+        win = make_window(config)
         win.resize(1300, 900)
         win.show()
         return win
