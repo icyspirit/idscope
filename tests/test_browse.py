@@ -39,3 +39,18 @@ def test_shape_items(source_a):
     assert find_item(eq, "time_slice/global_quantities/magnetic_axis").kind == "shape"
     wall = find_item(list_signals(source_a, "wall"), "description_2d/limiter/unit/outline")
     assert wall.signal_path == "wall/description_2d[:]/limiter/unit[:]/outline"
+
+
+def test_machine_shape_items(source_a):
+    """A layer of the vessel and the conductor of a coil are shapes as a whole, not
+    their contours or points one by one."""
+    wall = list_signals(source_a, "wall")
+    vessel = find_item(wall, "description_2d/vessel/unit/annular")
+    assert vessel.kind == "shape"
+    assert vessel.signal_path == "wall/description_2d[:]/vessel/unit[:]/annular"
+    assert find_item(wall, "description_2d/vessel/unit/annular/outline_inner") is None
+    tf = list_signals(source_a, "tf")
+    conductor = find_item(tf, "coil/conductor/elements")
+    assert conductor.kind == "shape" and not conductor.time_dependent
+    assert conductor.signal_path == "tf/coil[:]/conductor[:]/elements"
+    assert find_item(tf, "coil/conductor/elements/start_points") is None

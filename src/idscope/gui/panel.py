@@ -12,7 +12,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from idscope.config import PanelConfig, SignalConfig
 from idscope.data import MAP, PROFILE, SHAPE, TRACE, Channels, MapSeries, ProfileSeries
 from idscope.data import Shapes, SignalData, parse_alternatives
-from idscope.data.extract import GEOMETRY, MARKERS, POINT
+from idscope.data.extract import ANNULAR, GEOMETRY, MARKERS, POINT
 from idscope.data.sources import DataSource
 from idscope.errors import IdscopeError, NoDataError
 from idscope.gui import style
@@ -755,7 +755,7 @@ class Panel(QtWidgets.QFrame):
         elif data.shape == MARKERS:  # often thousands: small dots, no outline
             item = pg.PlotDataItem(pen=None, symbol="o", symbolSize=3, symbolPen=None,
                                    symbolBrush=pg.mkBrush(pen.color()))
-        elif data.shape == GEOMETRY:
+        elif data.shape in (GEOMETRY, ANNULAR):  # filled (a vessel layer: its ring)
             fill = QtGui.QColor(pen.color())
             fill.setAlpha(60)
             item = pg.PlotDataItem(pen=pen, connect="finite", fillLevel="enclosed",

@@ -9,7 +9,14 @@ from idscope.data import (
     Trace,
     parse_signal_path,
 )
-from idscope.data.extract import geometry_outline, marker_positions, normalize, plan_path
+from idscope.data.extract import (
+    annular_outline,
+    conductor_line,
+    geometry_outline,
+    marker_positions,
+    normalize,
+    plan_path,
+)
 from idscope.data.sources import DataSource, parse_source
 from idscope.errors import NoDataError, PathError
 
@@ -452,6 +459,134 @@ def test_geometry_types():
                                1.0)
     arcs.curvature_radii = [-1.0, 0.0, 0.0, 0.0]  # into the square
     assert np.all(geometry_outline(geometry)[1:16, 1] > 0)
+
+
+def test_machine_shapes(source_a):
+    """The vessel between its two contours, the passive loops and the conductor of
+    the toroidal field coils, as the demo machine has them."""
+    from idscope.demo import TF_CONDUCTOR
+
+    vessel = get(source_a, "wall/description_2d[0]/vessel/unit[:]/annular")
+    assert vessel.shape == "annular" and vessel.names == ["vacuum vessel"]
+    (ring,), _ = vessel.at(None)
+    gap = np.flatnonzero(np.isnan(ring[:, 0]))
+    assert len(gap) == 1  # between the inner and the outer contour, both closed
+    inner, outer = ring[: gap[0]], ring[gap[0] + 1:]
+    np.testing.assert_allclose([inner[0], outer[0]], [inner[-1], outer[-1]])
+    assert inner[:, 0].min() == pytest.approx(1.0) and outer[:, 0].max() == pytest.approx(2.65)
+    plates = get(source_a, "pf_passive/loop[:]/element[:]/geometry")
+    assert plates.shape == "geometry" and plates.names == ["upper plate", "lower plate"]
+    currents = get(source_a, "pf_passive/loop[:]/current")
+    assert isinstance(currents, Channels) and currents.names == plates.names
+    tf = get(source_a, "tf/coil[:]/conductor[:]/elements")
+    assert tf.shape == "conductor" and tf.names == ["TF"]  # the coil, not its conductor
+    (line,), _ = tf.at(None)
+    assert not np.isnan(line).any()  # the elements meet, all the way round
+    np.testing.assert_allclose(line[0], line[-1])
+    np.testing.assert_allclose([line[:, 0].min(), line[:, 0].max(), line[:, 1].max()],
+                               [0.9, 3.13, 1.93])
+    # the arcs are on their circles
+    for _, kind, start, _, end, centre in TF_CONDUCTOR:
+        if kind != 2:
+            continue
+        radius = np.hypot(*np.subtract(start, centre))
+        on_arc = np.isclose(np.hypot(line[:, 0] - centre[0], line[:, 1] - centre[1]), radius)
+        between = ((line[:, 0] - min(start[0], end[0]) >= -1e-9)
+                   & (line[:, 0] - max(start[0], end[0]) <= 1e-9)
+                   & (line[:, 1] - min(start[1], end[1]) >= -1e-9)
+                   & (line[:, 1] - max(start[1], end[1]) <= 1e-9))
+        assert on_arc[between].sum() >= 16
+    field = get(source_a, "tf/b_field_phi_vacuum_r/data")
+    np.testing.assert_allclose(field.values, 3.6)
+
+
+def test_conductor_elements():
+    import imas
+
+    tf = imas.IDSFactory().tf()
+    tf.coil.resize(1)
+    tf.coil[0].conductor.resize(1)
+    elements = tf.coil[0].conductor[0].elements
+    assert conductor_line(elements) is None  # nothing filled
+    nan = np.nan
+
+    def fill(types, start, middle, end, centre, phi=None):
+        if hasattr(elements, "names"):
+            elements.names = [f"element {i}" for i in range(len(types))]
+        elements.types = np.array(types, dtype=np.int32)
+        for node, points in ((elements.start_points, start),
+                             (elements.intermediate_points, middle),
+                             (elements.end_points, end), (elements.centres, centre)):
+            node.r = [p[0] for p in points]
+            node.z = [p[1] for p in points]
+            node.phi = phi if phi is not None else [0.0] * len(points)
+
+    # a line, then an arc the long way round, through its intermediate point, and a
+    # full circle about its centre that starts elsewhere
+    s = np.sqrt(0.5)
+    fill([1, 2, 3], start=[(1, 0), (2, 0), (3, 3)], middle=[(nan, nan), (1 - s, -s), (nan, nan)],
+         end=[(2, 0), (1, 1), (nan, nan)], centre=[(nan, nan), (1, 0), (2.5, 3)])
+    line = conductor_line(elements)
+    gaps = np.flatnonzero(np.isnan(line[:, 0]))
+    assert len(gaps) == 1  # before the circle, which does not start where the arc ends
+    np.testing.assert_allclose(line[0], [1, 0])
+    arc = line[1: gaps[0]]
+    np.testing.assert_allclose(np.hypot(arc[:, 0] - 1, arc[:, 1]), 1.0)
+    assert arc[:, 1].min() == pytest.approx(-1.0)  # three quarters, past the bottom
+    np.testing.assert_allclose(arc[-1], [1, 1])
+    circle = line[gaps[0] + 1:]
+    np.testing.assert_allclose(np.hypot(circle[:, 0] - 2.5, circle[:, 1] - 3), 0.5)
+    np.testing.assert_allclose(circle[0], circle[-1])
+    # an arc without its intermediate point goes the shorter way about its centre;
+    # types that are not known are left out
+    fill([2, 7], start=[(2, 0), (0, 0)], middle=[(nan, nan)] * 2, end=[(1, 1), (1, 1)],
+         centre=[(1, 0), (nan, nan)])
+    line = conductor_line(elements)
+    assert not np.isnan(line).any() and line[:, 1].min() >= -1e-12
+    # in three dimensions: a ring around the axis is one point in (R, Z); a straight
+    # line between two toroidal angles comes closer to the axis in between
+    fill([3], start=[(2, 1)], middle=[(2, 1)], end=[(nan, nan)], centre=[(0, 1)],
+         phi=[0.0])
+    elements.intermediate_points.phi = [np.pi / 2]
+    np.testing.assert_allclose(conductor_line(elements), [[2, 1]] * 65, atol=1e-12)
+    fill([1], start=[(2, 0)], middle=[(nan, nan)], end=[(2, 0)], centre=[(nan, nan)])
+    elements.end_points.phi = [np.pi / 2]
+    chord = conductor_line(elements)
+    assert len(chord) == 17 and chord[:, 0].min() == pytest.approx(np.sqrt(2))
+
+
+def test_annular_layers():
+    import imas
+
+    wall = imas.IDSFactory().wall()
+    wall.description_2d.resize(1)
+    wall.description_2d[0].vessel.unit.resize(1)
+    annular = wall.description_2d[0].vessel.unit[0].annular
+    assert annular_outline(annular) is None  # nothing filled
+    # a centreline and a thickness per segment: a closed square, 0.2 thick
+    annular.centreline.r = [0.0, 1.0, 1.0, 0.0]
+    annular.centreline.z = [0.0, 0.0, 1.0, 1.0]
+    annular.thickness = [0.2] * 4
+    ring = annular_outline(annular)
+    gap = np.flatnonzero(np.isnan(ring[:, 0]))[0]
+    np.testing.assert_allclose(ring[:gap], [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9],
+                                            [0.1, 0.1]])
+    np.testing.assert_allclose(ring[gap + 1:][:4], [[-0.1, -0.1], [1.1, -0.1], [1.1, 1.1],
+                                                    [-0.1, 1.1]])
+    annular.thickness = [0.2]  # one for all
+    np.testing.assert_allclose(annular_outline(annular), ring)
+    annular.thickness = [0.2, 0.3]  # too few for the segments
+    assert annular_outline(annular) is None
+    # open contours: the band between them, one way along one and back the other
+    z = np.linspace(-1.0, 1.0, 5)
+    annular.outline_inner.r, annular.outline_inner.z = np.full(5, 1.0), z
+    annular.outline_outer.r, annular.outline_outer.z = np.full(5, 1.2), z[::-1]
+    band = annular_outline(annular)
+    np.testing.assert_allclose(band[:5], np.column_stack([np.full(5, 1.0), z]))
+    np.testing.assert_allclose(band[5:], [[1.2, 1.0], [1.2, 0.5], [1.2, 0.0], [1.2, -0.5],
+                                          [1.2, -1.0], [1.0, -1.0]])
+    annular.outline_outer.z = z  # the same way along both: still the band
+    np.testing.assert_allclose(annular_outline(annular), band)
 
 
 @pytest.fixture(scope="module")

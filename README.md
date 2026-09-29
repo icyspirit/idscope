@@ -68,12 +68,14 @@ Templates are ready-made configurations for common IDSs, and for the results of
 some kinds of codes. Start from one with `idscope -T NAME SOURCE ...` or File → New
 from template; `idscope --list-templates` prints their names. Templates for the
 results of a kind of code also go by the names of such codes: `-T nubdec` (NuBDeC)
-is `nbi`, and `-T sonamu` and `-T freegs` (SONAMU, FreeGS) are `free_boundary`.
+is `nbi`, `-T sonamu` and `-T freegs` (SONAMU, FreeGS) are `free_boundary`, and
+`-T autofrd` (autofrd, which draws a machine) is `device`.
 
 | template | shows |
 |---|---|
 | `core_profiles` | Ip, central Te/Ti/ne, loop voltage, li and beta over time; Te/Ti, ne/ni, q, current densities and Zeff profiles; Te and ne against (t, x) |
 | `core_sources` | for every source (beams, waves, ohmic, ...): profiles of electron and ion heating, current density, particles and torque density; power, driven current and torque over time; the power at the selected time, as bars |
+| `device` (`autofrd`) | the machine in the poloidal plane: the vacuum vessel (its layers, between their inner and outer contours), the wall (including parts only at some toroidal angles, such as ports), the passive conductors, the PF coils and the central solenoid, and the conductor of the TF coils; the currents of the coils and passive conductors, and the vacuum toroidal field, when the source has them |
 | `equilibrium` | profiles: q, pressure, current densities (j_phi, j_parallel), dp/dpsi, FF', elongation and triangularities |
 | `free_boundary` (`sonamu`, `freegs`) | the poloidal plane: flux surfaces, plasma boundary, X-points and those the solver was asked to hold, magnetic axis, coils and wall; the coil currents, as bars; p', FF', q and pressure against psi_n |
 | `nbi` (`nubdec`) | what the beams give the plasma: profiles of electron and ion heating, driven current and torque densities; fast ion density and pressures; where the ions of the beams are born (markers) and where the neutrons are (a map per reaction), in the poloidal plane; the neutron rates over time, D-D beam-thermal and thermal apart |
@@ -87,7 +89,9 @@ voltages of a pf_active written by an equilibrium code, which only has currents,
 the totals of a core_sources written by a beam deposition code, which only has
 profiles. The output of a beam code has no equilibrium and no wall: to draw the
 births over the flux surfaces, give the data entry the code was run on as a second
-source.
+source. A machine description has the geometry and no currents; given the outputs
+of several runs of autofrd, the `device` template draws each machine with a line
+style of its own.
 A template saved with File → Save as becomes a configuration that can be edited.
 
 ![equilibrium template on the ITER 134173/106 training data](docs/template-equilibrium.png)
@@ -99,6 +103,8 @@ A template saved with File → Save as becomes a configuration that can be edite
 ![nbi template comparing two synthetic sources](docs/template-nbi.png)
 
 ![free_boundary template comparing two synthetic sources](docs/template-free_boundary.png)
+
+![device template comparing two synthetic sources](docs/template-device.png)
 
 ## Using the scope
 
@@ -266,7 +272,12 @@ distribution_sources/source[:]/ggd/particles[0]/values   a map per source, on a 
   maps: the 2D geometry of coils and passive loops (outline, rectangle,
   parallelogram, arcs of circle, annulus or thick line), `r`/`z` outlines,
   `r`/`z` points, and the markers of a particle distribution, as dots (the columns
-  of their `positions` that their `coordinate_identifier` says are R and Z). The IDS
+  of their `positions` that their `coordinate_identifier` says are R and Z). Also
+  the layers of a vessel (`wall/description_2d[0]/vessel/unit[:]/annular`), filled
+  between their inner and outer contours, or around their centreline as thick as
+  their `thickness`; and conductors made of line segments, arcs of circle and full
+  circles (`tf/coil[:]/conductor[:]/elements`), drawn at their distance from the
+  axis and their height, since their points are in three dimensions. The IDS
   browser lists them as *shape*.
 - The `values` of a GGD quantity on a structured grid (grid identifier
   `structured_spaces`: two spaces of one dimension, e.g. R and Z) are a map, on the

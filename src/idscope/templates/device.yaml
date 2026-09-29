@@ -1,0 +1,62 @@
+# idscope template: a machine: its wall and vacuum vessel, its coils and passive
+# conductors (autofrd in tbd-fusion writes these: "-T autofrd" is this template).
+#
+#   idscope -T device SOURCE [SOURCE ...]
+#
+# The poloidal cross-section shows the vacuum vessel (the layers between the inner and
+# outer contours of its annular units, or its block elements), the plasma-facing
+# components (the limiter units of the wall; one that is only at some toroidal angles,
+# such as a port, is drawn like the others), the passive conductors (pf_passive), the
+# PF coils and the central solenoid (pf_active), and the center line of the conductor
+# of the toroidal field coils (tf). The currents and the vacuum field of the TF coils
+# are shown when the source has them: a machine description alone has the geometry,
+# and the other panels then note that these are not filled. Given several sources,
+# e.g. the runs of autofrd for two placements of the coils, the line style tells them
+# apart.
+title: device
+columns:
+  - width: 1.5
+    panels:
+      - title: Poloidal cross-section
+        kind: map
+        equal_aspect: true
+        x_label: R [m]
+        y_label: Z [m]
+        signals:
+          - path: wall/description_2d[0]/vessel/unit[:]/annular | wall/description_2d[0]/vessel/unit[:]/element[:]/outline
+            label: vessel
+            color: "#a0a0a0"
+          - path: wall/description_2d[0]/limiter/unit[:]/outline
+            label: wall
+            color: "#4c4c4c"
+          - path: pf_passive/loop[:]/element[:]/geometry
+            label: passive
+            color: "#8c564b"
+          - path: pf_active/coil[:]/element[:]/geometry | pf_active/coil[:]/geometry
+            label: coils
+            color: "#1f77b4"
+          - path: tf/coil[:]/conductor[:]/elements
+            label: TF coil
+            color: "#d62728"
+  - panels:
+      - title: Coil currents
+        kind: profile
+        signals:
+          - path: pf_active/coil[:]/current/data
+            scale: 1.0e-3
+        y_label: I [kA]
+      - title: Passive currents
+        kind: profile
+        signals:
+          - path: pf_passive/loop[:]/current
+            scale: 1.0e-3
+        y_label: I [kA]
+      - title: TF coil current
+        signals:
+          - path: tf/coil[:]/current/data
+            scale: 1.0e-3
+        y_label: I [kA]
+      - title: Vacuum toroidal field
+        signals:
+          - path: tf/b_field_phi_vacuum_r/data | tf/b_field_tor_vacuum_r/data
+        y_label: R B_phi [T m]
