@@ -3,7 +3,7 @@
 from dataclasses import fields
 from typing import List, Optional
 
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from idscope.config import KINDS, PanelConfig, SignalConfig
 from idscope.data import parse_alternatives
@@ -116,6 +116,12 @@ class SetupDialog(QtWidgets.QDialog):
         for signal in config.signals:
             self._add_row(signal)
         layout.addWidget(self.table, stretch=1)
+        # Delete or Backspace removes the selected signals (not while editing a cell)
+        remove = QtGui.QAction("Remove", self.table)
+        remove.setShortcuts([QtGui.QKeySequence("Del"), QtGui.QKeySequence("Backspace")])
+        remove.setShortcutContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
+        remove.triggered.connect(self._remove_rows)
+        self.table.addAction(remove)
 
         buttons = QtWidgets.QHBoxLayout()
         for text, slot in (
@@ -126,6 +132,8 @@ class SetupDialog(QtWidgets.QDialog):
         ):
             button = QtWidgets.QPushButton(text)
             button.clicked.connect(slot)
+            if text == "Remove":
+                button.setToolTip("Remove the selected signals (Delete)")
             buttons.addWidget(button)
         buttons.addStretch(1)
         box = QtWidgets.QDialogButtonBox(

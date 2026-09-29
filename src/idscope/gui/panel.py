@@ -149,8 +149,9 @@ class Panel(QtWidgets.QFrame):
     setupRequested = QtCore.Signal(object)
     layoutRequested = QtCore.Signal(object, str)
     """Layout change: ``add_below``, ``add_column`` or ``remove``."""
-    signalsChanged = QtCore.Signal(object)
-    """The signals of the panel changed (e.g. by a drop) and must be reloaded."""
+    signalsChanged = QtCore.Signal(object, str)
+    """The signals of the panel changed (e.g. by a drop) and must be reloaded:
+    ``(panel, description of the change)``."""
     hoverMessage = QtCore.Signal(str)
 
     def __init__(self, config: PanelConfig, parent=None):
@@ -323,7 +324,11 @@ class Panel(QtWidgets.QFrame):
 
     def add_signal(self, path: str) -> None:
         self.config.signals.append(SignalConfig(path))
-        self.signalsChanged.emit(self)
+        self.signalsChanged.emit(self, "add signal")
+
+    def clear_signals(self) -> None:
+        self.config.signals.clear()
+        self.signalsChanged.emit(self, "clear signals")
 
     # ------------------------------------------------------ layout (main window)
 
@@ -1028,7 +1033,7 @@ class Panel(QtWidgets.QFrame):
         actions = [
             ("Setup…", lambda: self.setupRequested.emit(self)),
             ("Autoscale", self.autoscale),
-            ("Clear signals", self._clear_signals),
+            ("Clear signals", self.clear_signals),
             (None, None),
             ("Add panel below", lambda: self.layoutRequested.emit(self, "add_below")),
             ("Add column", lambda: self.layoutRequested.emit(self, "add_column")),
@@ -1039,10 +1044,6 @@ class Panel(QtWidgets.QFrame):
                 menu.addSeparator()
             else:
                 menu.addAction(text).triggered.connect(slot)
-
-    def _clear_signals(self) -> None:
-        self.config.signals.clear()
-        self.signalsChanged.emit(self)
 
     # ------------------------------------------------------------- drag & drop
 
@@ -1064,4 +1065,4 @@ class Panel(QtWidgets.QFrame):
         self.activated.emit(self)
         for path in paths:
             self.config.signals.append(SignalConfig(path))
-        self.signalsChanged.emit(self)
+        self.signalsChanged.emit(self, "drop signals")

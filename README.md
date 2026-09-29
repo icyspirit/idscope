@@ -104,6 +104,12 @@ A template saved with File → Save as becomes a configuration that can be edite
   share their x axis are drawn without gaps, and only the lowest shows the x values.
 - Right-click a panel for its menu: setup, autoscale, add/remove panels and columns,
   and pyqtgraph's *Export…* (PNG, SVG, CSV of the curves).
+- **Delete** or **Backspace** deletes the signals of the current panel, and in a panel
+  without signals the panel itself. In the setup dialog, they delete the selected
+  signals. Text fields keep these keys for their text.
+- **Undo** (Ctrl+Z) and **Redo** (Ctrl+Shift+Z) in the Edit menu take back changes of
+  the panels (layout, signals, setup, sizes, shared x axes) and of the sources, and
+  the scopes replaced by Open, New or a template. The time is not undone.
 - Signals that cannot be shown are reported in the panel (hover for details) and in
   View → Log.
 - The IDS browser asks the data entry which quantities are filled. Access Layers
@@ -126,8 +132,8 @@ Started without a configuration file or a template, it shows them again.
 | `idscope -T NAME shot.nc` | of the template | `shot.nc` |
 
 Nothing is lost when idscope closes, so it does not ask to save. Instead, the title
-shows `*` while the panels have changes that are not saved to the configuration file
-(the sources and the time do not count), and File → Save writes them to it. File →
+shows `*` while the panels differ from the configuration file (the sources and the
+time do not count), and File → Save writes them to it. File →
 Open recent lists the configuration files opened or saved last. idscope also keeps
 the size of its window, its docks, the mouse mode and the IDS shown in the browser.
 An export (`-e`) shows the same panels as the window would, and leaves the session
