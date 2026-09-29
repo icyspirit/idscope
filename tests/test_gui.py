@@ -357,10 +357,11 @@ def test_modified_mark(window, config_path, data_dir, tmp_path, monkeypatch):
     assert window.isWindowModified()
     assert window.panels[1].config.title == "Flux"
 
-    for change in (
-        lambda: window.share_x_action.trigger(),
-        lambda: window.columns_splitter.splitterMoved.emit(300, 1),  # dragged
-    ):
+    def drag():
+        window.columns_splitter.setSizes([200, 500, 500])
+        window.columns_splitter.splitterMoved.emit(200, 1)
+
+    for change in (lambda: window.share_x_action.trigger(), drag):
         window.load_config_file(config_path)
         change()
         assert window.isWindowModified()
@@ -492,6 +493,152 @@ def test_browser_when_filled_quantities_cannot_be_listed(old_access_layer, windo
     window.reload()
     assert "found by reading" not in browser.status.text()
     assert browser.status.toolTip() == ""
+
+
+def activate(window, qtbot):
+    """Make ``window`` the active window, for its keyboard shortcuts."""
+    window.activateWindow()
+    qtbot.waitUntil(lambda: QtWidgets.QApplication.activeWindow() is window)
+
+
+def test_delete_and_backspace(window, qtbot):
+    Key = QtCore.Qt.Key
+    activate(window, qtbot)
+    first, second = window.panels[:2]
+    window.set_current_panel(first)
+    first.graphics.setFocus()
+    qtbot.keyClick(first.graphics, Key.Key_Delete)  # the signals first
+    assert first.config.signals == [] and len(window.panels) == len(KINDS)
+    assert window.isWindowModified()
+    qtbot.keyClick(first.graphics, Key.Key_Backspace)  # then the empty panel
+    assert len(window.panels) == len(KINDS) - 1
+    assert window.current_panel.config is second.config  # the one that took its place
+    # the keyboard stays in the panels, for the next key
+    assert window._panels_have_focus()
+    qtbot.keyClick(QtWidgets.QApplication.focusWidget(), Key.Key_Delete)
+    assert second.config.signals == []
+
+    # text fields keep their keys
+    window.sources_edit.setFocus()
+    text = window.sources_edit.text()
+    qtbot.keyClick(window.sources_edit, Key.Key_Backspace)
+    assert window.sources_edit.text() == text[:-1]
+    assert len(window.panels) == len(KINDS) - 1
+
+    # all undone: the panel is back, with its signal, and is the current one again
+    for _ in range(3):
+        window.undo()
+    assert len(window.panels) == len(KINDS)
+    assert window.current_panel.config.title == "Plasma current"
+    assert [len(p.config.signals) for p in window.panels[:2]] == [1, 1]
+    assert not window.isWindowModified()
+
+    # the last panel stays when it is empty
+    window.new_config()
+    window.delete_in_current_panel()
+    assert len(window.panels) == 1
+    assert window.undo_action.text() == "&Undo new"
+
+
+def test_undo_and_redo(window, data_dir):
+    assert not window.undo_action.isEnabled() and not window.redo_action.isEnabled()
+    te = window.panels[3]
+    window.set_current_panel(te)
+    window.change_layout(te, "add_below")
+    assert window.undo_action.text() == "&Undo add panel"
+    window.current_panel.add_signal("summary/global_quantities/ip/value")
+    window.set_time(7.0)
+
+    window.undo()  # the signal
+    assert window.current_panel.config.signals == []
+    assert window.time == 7.0  # the time is not undone
+    window.undo()  # the panel
+    assert len(window.panels) == len(KINDS)
+    assert window.current_panel.config.title == "Electron temperature"
+    assert not window.isWindowModified()  # as in the file again
+    window.redo()
+    assert len(window.panels) == len(KINDS) + 1 and window.isWindowModified()
+    assert window.redo_action.text() == "&Redo add signal"
+    window.change_layout(window.current_panel, "remove")
+    assert not window.redo_action.isEnabled()  # a new change starts a new branch
+
+    # the sources can be undone, but do not count as a change of the panels
+    window.sources_edit.setText(f"only={data_dir / 'a.nc'}")
+    window.apply_sources()
+    window.undo()
+    assert [s.label for s in window.config.sources] == ["A", "B"]
+    assert [len(p.curves) for p in window.panels[:2]] == [2, 2]
+
+    # a drag of a splitter is one change, however many steps it moves in
+    window.columns_splitter.setSizes([200, 500, 500])
+    window.columns_splitter.splitterMoved.emit(200, 1)
+    window.columns_splitter.setSizes([300, 400, 500])
+    window.columns_splitter.splitterMoved.emit(300, 1)
+    assert window.undo_action.text() == "&Undo panel sizes"
+    window.undo()
+    assert window.undo_action.text() == "&Undo remove panel"  # the sources were undone
+    assert [c.width for c in window.config.columns] == [1.0, 1.0, 1.0]
+
+
+def test_undo_open_new_and_template(window, config_path, tmp_path):
+    window.change_layout(window.panels[0], "remove")
+    saved = tmp_path / "saved.yaml"
+    window._save_to(saved)
+    window.new_from_template("pf_active")
+    assert window.config_path is None
+    window.new_config()
+    assert len(window.panels) == 1
+
+    window.undo()
+    assert window.config.title == "pf_active" and window.config_path is None
+    window.undo()  # back to the saved file
+    assert window.config_path == saved and not window.isWindowModified()
+    assert window.windowTitle() == "idscope — idscope demo[*]"
+    assert window.redo_action.text() == "&Redo template pf_active"
+    # before the save: 7 panels, unlike that file
+    window.undo()
+    assert len(window.panels) == len(KINDS)
+    assert window.config_path == saved and window.isWindowModified()
+    window.redo()
+    assert not window.isWindowModified()
+
+
+def test_setup_dialog_delete_key(window, qtbot):
+    from idscope.gui.setup_dialog import SetupDialog
+
+    Key = QtCore.Qt.Key
+    psi = window.panels[6]
+    dialog = SetupDialog(psi.config, ["A", "B"], window)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    activate(dialog, qtbot)
+    table = dialog.table
+    assert table.rowCount() == 2
+    table.setFocus()
+    table.selectRow(1)
+    qtbot.keyClick(table, Key.Key_Delete)
+    assert table.rowCount() == 1
+    # while a cell is edited, the keys edit its text
+    table.editItem(table.item(0, 0))
+    editor = QtWidgets.QApplication.focusWidget()
+    assert isinstance(editor, QtWidgets.QLineEdit)
+    text = editor.text()
+    editor.end(False)
+    qtbot.keyClick(editor, Key.Key_Backspace)
+    assert editor.text() == text[:-1] and table.rowCount() == 1
+    dialog.reject()
+
+
+def test_a_drag_after_a_save_is_undone_on_its_own(window, tmp_path):
+    splitter = window.columns_splitter
+    splitter.setSizes([200, 500, 500])
+    splitter.splitterMoved.emit(200, 1)
+    window._save_to(tmp_path / "saved.yaml")
+    splitter.setSizes([300, 400, 500])
+    splitter.splitterMoved.emit(300, 1)
+    assert window.isWindowModified()
+    window.undo()
+    assert not window.isWindowModified()  # back to the saved sizes
 
 
 def test_members_have_one_color_in_the_window(window):

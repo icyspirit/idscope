@@ -1,12 +1,13 @@
 """The idscope main window."""
 
 import copy
+import dataclasses
 import logging
 import os
 import time as _time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
@@ -16,6 +17,7 @@ from idscope.config import (
     ColumnConfig,
     PanelConfig,
     ScopeConfig,
+    config_to_dict,
     default_config,
     load_config,
     save_config,
@@ -44,6 +46,8 @@ SESSION_DELAY_MS = 1000
 """The session is written this long after the last change, and when closing."""
 WINDOW_STATE_VERSION = 1
 """Version of the saved layout of the docks and toolbar: change it when they change."""
+MAX_UNDO = 100
+"""Number of changes that can be undone."""
 
 
 @contextmanager
@@ -64,6 +68,43 @@ def _normalized(sizes: List[int]) -> List[float]:
     return [round(size / mean, 3) for size in sizes]
 
 
+def _ensure_panels(config: ScopeConfig) -> ScopeConfig:
+    """Give every column a panel, and the configuration a column."""
+    if not config.columns:
+        config.columns = [ColumnConfig([PanelConfig()])]
+    for column in config.columns:
+        if not column.panels:
+            column.panels.append(PanelConfig())
+    return config
+
+
+def _layout(config: ScopeConfig) -> dict:
+    """What a configuration file holds of the panels: all but the sources, the time
+    and the Data Dictionary version, which go with the data at hand."""
+    data = config_to_dict(config)
+    for key in ("sources", "time", "dd_version"):
+        data.pop(key, None)
+    return data
+
+
+@dataclasses.dataclass
+class _Step:
+    """A state of the scope that Undo (or Redo) goes back to."""
+
+    config: ScopeConfig
+    """A copy of the configuration."""
+    config_path: Optional[Path]
+    saved: Optional[dict]
+    """The layout of the configuration file (see _layout), None if unknown."""
+    description: str = ""
+    """The change that left this state, e.g. "remove panel"."""
+    replaced: bool = False
+    """The change replaced the scope (Open, New, a template): Undo also goes back to
+    the configuration file of this state."""
+    current: Optional[Tuple[int, int]] = None
+    """Column and row of the current panel."""
+
+
 def _open_settings() -> QtCore.QSettings:
     """The settings of the window, next to the last session (see idscope.session)."""
     directory = config_dir()
@@ -77,11 +118,13 @@ def _open_settings() -> QtCore.QSettings:
 class MainWindow(QtWidgets.QMainWindow):
     """A scope window: sources, a grid of panels and a time bar.
 
-    The title shows ``*`` when the panels have changes that are not saved to the
-    configuration file; the sources and the time do not count.
+    The title shows ``*`` when the panels differ from the configuration file; the
+    sources and the time do not count. Edit → Undo takes back the changes of the
+    panels and of the sources, and the scopes replaced by Open, New or a template.
 
     Args:
-        modified: the configuration has such changes already.
+        modified: the panels may differ from ``config_path``, e.g. in the last
+            session: compare them with that file.
         persist: restore the size, docks and mode of the window from the settings,
             and keep them, and the scope as the last session, when the window closes
             (see :mod:`idscope.session`). The session is also written a moment after
@@ -91,8 +134,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, config: Optional[ScopeConfig] = None, config_path=None,
                  modified: bool = False, persist: bool = False):
         super().__init__()
-        self.config = config if config is not None else default_config()
+        self.config = _ensure_panels(config if config is not None else default_config())
         self.config_path: Optional[Path] = Path(config_path) if config_path else None
+        # The layout of the configuration file, to compare the panels with
+        self._saved: Optional[dict] = (
+            self._file_layout(self.config_path) if modified else _layout(self.config)
+        )
+        self._undo: List[_Step] = []
+        self._redo: List[_Step] = []
+        self._merging: Optional[str] = None  # the change that the next one may extend
         self.persist = persist
         self.settings: Optional[QtCore.QSettings] = _open_settings() if persist else None
         self.pool = SourcePool(self.config.dd_version)
@@ -141,7 +191,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_all()
         self.browser.set_sources(self.sources())
         self._update_title()
-        self.setWindowModified(modified)
+        self._update_modified()
+        self._stable = self._snapshot()  # the state that the next change starts from
+        self._update_undo_actions()
         if self.config_path is not None:
             self._add_recent_file(self.config_path)
         if self.settings is not None:
@@ -242,6 +294,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.recent_menu = file_menu.addMenu("Open &recent")
                 self._update_recent_menu()
 
+        edit_menu = menu.addMenu("&Edit")
+        self.undo_action = edit_menu.addAction("&Undo")
+        self.undo_action.setShortcuts(QtGui.QKeySequence.StandardKey.Undo)
+        self.undo_action.triggered.connect(self.undo)
+        self.redo_action = edit_menu.addAction("&Redo")
+        self.redo_action.setShortcuts(QtGui.QKeySequence.StandardKey.Redo)
+        self.redo_action.triggered.connect(self.redo)
+        edit_menu.addSeparator()
+        self.delete_action = edit_menu.addAction("&Delete signals, then the empty panel")
+        self.delete_action.setToolTip(
+            "Delete the signals of the current panel; in a panel without signals, "
+            "delete the panel"
+        )
+        # The keys go to text fields when they have the focus
+        self.delete_action.setShortcuts(
+            [QtGui.QKeySequence("Del"), QtGui.QKeySequence("Backspace")]
+        )
+        self.delete_action.triggered.connect(self.delete_in_current_panel)
+
         layout_menu = menu.addMenu("&Layout")
         layout_menu.addAction("Add panel below current").triggered.connect(
             lambda: self.change_layout(self.current_panel, "add_below")
@@ -271,7 +342,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.share_x_action.setCheckable(True)
         self.share_x_action.setChecked(self.config.share_x)
         self.share_x_action.toggled.connect(self._set_share_x)
-        self.share_x_action.triggered.connect(lambda checked=False: self._changed())
+        self.share_x_action.triggered.connect(
+            lambda checked=False: self._changed("shared x axes")
+        )
         view_menu.addAction("Autoscale all").triggered.connect(self.autoscale_all)
         view_menu.addSeparator()
         for text, shortcut, delta in (("Previous time slice", "Ctrl+Left", -1),
@@ -292,16 +365,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.columns_splitter.deleteLater()
         self.panels = []
         self.column_panels: List[List[Panel]] = []
-        if not self.config.columns:
-            self.config.columns = [ColumnConfig([PanelConfig()])]
+        _ensure_panels(self.config)
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(4)
         # emitted when the user drags a handle, not when the window is resized
         splitter.splitterMoved.connect(self._on_splitter_moved)
         for column in self.config.columns:
-            if not column.panels:
-                column.panels.append(PanelConfig())
             column_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
             column_splitter.setChildrenCollapsible(False)
             column_splitter.setHandleWidth(2)
@@ -342,8 +412,8 @@ class MainWindow(QtWidgets.QMainWindow):
         panel.hoverMessage.connect(self._show_hover)
         return panel
 
-    def _on_signals_changed(self, panel: Panel) -> None:
-        self._changed()
+    def _on_signals_changed(self, panel: Panel, description: str) -> None:
+        self._changed(description)
         self.refresh_panel(panel)
 
     def set_current_panel(self, panel: Optional[Panel]) -> None:
@@ -355,7 +425,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_splitter_moved(self, pos: int, index: int) -> None:
         self._sizes_dragged = True
-        self._changed()
+        self._changed("panel sizes", merge=True)  # a drag moves in many steps
 
     def sync_layout_to_config(self) -> None:
         """Store splitter sizes as relative widths/heights in the configuration.
@@ -380,31 +450,73 @@ class MainWindow(QtWidgets.QMainWindow):
                     return c, p
         raise ValueError("panel not in configuration")
 
+    def _location(self) -> Optional[Tuple[int, int]]:
+        """Column and row of the current panel."""
+        return self._locate(self.current_panel) if self.current_panel else None
+
+    def _panel_at(self, location: Optional[Tuple[int, int]]) -> Optional[Panel]:
+        if location is None:
+            return None
+        c, p = location
+        if c < len(self.column_panels) and p < len(self.column_panels[c]):
+            return self.column_panels[c][p]
+        return None
+
+    def _panels_have_focus(self) -> bool:
+        widget = QtWidgets.QApplication.focusWidget()
+        return widget is not None and self.panel_area.isAncestorOf(widget)
+
+    def _focus_current_panel(self) -> None:
+        """Keep the keyboard in the panels, e.g. for the next Delete, rather than in
+        the text field that Qt gives it to when the panel that had it is removed."""
+        if self.current_panel is not None:
+            self.current_panel.graphics.setFocus()
+
     def change_layout(self, panel: Optional[Panel], action: str) -> None:
         """Add a panel below ``panel``, add a column after it, or remove it."""
         if panel is None:
             panel = self.panels[0] if self.panels else None
         self.sync_layout_to_config()
+        before = self._location()
+        focus = self._panels_have_focus()
         c, p = self._locate(panel) if panel is not None else (0, 0)
         columns = self.config.columns
-        new_config = None
         if action == "add_below":
-            new_config = PanelConfig()
-            columns[c].panels.insert(p + 1, new_config)
+            current = PanelConfig()
+            columns[c].panels.insert(p + 1, current)
         elif action == "add_column":
-            new_config = PanelConfig()
-            columns.insert(c + 1, ColumnConfig([new_config]))
+            current = PanelConfig()
+            columns.insert(c + 1, ColumnConfig([current]))
         elif action == "remove":
             del columns[c].panels[p]
             if not columns[c].panels:
                 del columns[c]
             if not columns:
                 columns.append(ColumnConfig([PanelConfig()]))
+            # the panel that takes its place becomes the current one
+            column = columns[min(c, len(columns) - 1)]
+            current = column.panels[min(p, len(column.panels) - 1)]
+        else:
+            raise ValueError(f"Unknown layout change '{action}'")
         self.build_panels()
-        if new_config is not None:
-            self.set_current_panel(next(x for x in self.panels if x.config is new_config))
+        self.set_current_panel(next(x for x in self.panels if x.config is current))
+        if focus:
+            self._focus_current_panel()
         self.refresh_all()
-        self._changed()
+        description = {"add_below": "add panel", "add_column": "add column",
+                       "remove": "remove panel"}[action]
+        self._changed(description, current=before)
+
+    def delete_in_current_panel(self) -> None:
+        """Delete the signals of the current panel, or the panel if it has none
+        (Delete, Backspace)."""
+        panel = self.current_panel
+        if panel is None:
+            return
+        if panel.config.signals:
+            panel.clear_signals()
+        elif len(self.panels) > 1:
+            self.change_layout(panel, "remove")
 
     # ------------------------------------------------------------------- data
 
@@ -423,7 +535,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._show_sources()
         self.refresh_all()
         self.browser.set_sources(self.sources())
-        self._session_changed()  # the sources are not a change of the panels
+        self._record("sources")  # which can be undone, but is no change of the panels
+        self._session_changed()
 
     def reload(self) -> None:
         """Read all data again."""
@@ -564,8 +677,10 @@ class MainWindow(QtWidgets.QMainWindow):
         before = copy.deepcopy(panel.config)
 
         def on_applied():
-            if panel.config != before:
-                self._changed()
+            nonlocal before
+            if panel.config != before:  # e.g. not when OK follows Apply
+                self._changed("panel setup")
+                before = copy.deepcopy(panel.config)
             panel.apply_config()
             self.refresh_panel(panel)
 
@@ -587,14 +702,42 @@ class MainWindow(QtWidgets.QMainWindow):
         # Qt writes "*" in place of "[*]" while the window is modified
         self.setWindowTitle(f"idscope — {name}[*]" if name else "idscope[*]")
 
-    def _changed(self) -> None:
-        """The panels changed: the configuration file does not have the changes."""
-        self.setWindowModified(True)
+    def _update_modified(self) -> None:
+        """Show * in the title when the panels differ from the configuration file."""
+        self.setWindowModified(
+            self._saved is None or _layout(self.current_config()) != self._saved
+        )
+
+    def _file_layout(self, path: Optional[Path]) -> Optional[dict]:
+        if path is None:
+            return None
+        try:
+            return _layout(_ensure_panels(load_config(path)))
+        except IdscopeError:
+            return None
+
+    def _changed(self, description: str, *, current: Optional[Tuple[int, int]] = None,
+                 merge: bool = False) -> None:
+        """The user changed the panels (see _record)."""
+        self._record(description, current=current, merge=merge)
+        self._update_modified()
         self._session_changed()
 
     def show_config(self, config: ScopeConfig, config_path=None,
-                    modified: bool = False) -> None:
-        """Show another scope, e.g. from a configuration file or a template."""
+                    description: str = "open") -> None:
+        """Show another scope, e.g. from a configuration file or a template.
+
+        Undo goes back to the scope shown before, with its configuration file.
+        """
+        before = self._location()
+        config = _ensure_panels(config)
+        self._show(config, config_path, _layout(config))
+        self._record(description, replaced=True, current=before)
+        self._session_changed()
+
+    def _show(self, config: ScopeConfig, config_path, saved: Optional[dict],
+              current: Optional[Tuple[int, int]] = None) -> None:
+        focus = self._panels_have_focus()
         sources_changed = config.sources != self.config.sources
         if config.dd_version != self.pool.dd_version:
             self.pool.close()
@@ -605,6 +748,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pool.keep_only(config.sources)
         self.config = config
         self.config_path = Path(config_path) if config_path else None
+        self._saved = saved
         self.time = config.time
         self.current_panel = None
         with QtCore.QSignalBlocker(self.share_x_action):
@@ -612,15 +756,82 @@ class MainWindow(QtWidgets.QMainWindow):
         self._show_sources()
         self.member_colors.clear()  # the members of this scope, from the first color
         self.build_panels()
+        panel = self._panel_at(current)
+        if panel is not None:
+            self.set_current_panel(panel)
+        if focus:
+            self._focus_current_panel()
         self.refresh_all()
         if sources_changed:
             self.browser.set_sources(self.sources())
         self._update_title()
-        self.setWindowModified(modified)
+        self._update_modified()
+
+    # ------------------------------------------------------------------- undo
+
+    def _snapshot(self, **fields) -> _Step:
+        return _Step(copy.deepcopy(self.current_config()), self.config_path, self._saved,
+                     **fields)
+
+    def _record(self, description: str, *, replaced: bool = False,
+                current: Optional[Tuple[int, int]] = None, merge: bool = False) -> None:
+        """Keep the state before a change, so that Undo can go back to it.
+
+        Args:
+            description: what changed, e.g. "remove panel" (shown as "Undo remove
+                panel").
+            replaced: the change replaced the scope (Open, New, a template).
+            current: the current panel before the change, if the change moved it.
+            merge: add the change to the last one if that was the same, e.g. to count
+                the steps of dragging a splitter as one change.
+        """
+        if not (merge and self._merging == description and self._undo):
+            self._undo.append(dataclasses.replace(
+                self._stable, description=description, replaced=replaced,
+                current=current if current is not None else self._location(),
+            ))
+            del self._undo[:-MAX_UNDO]
+        self._redo.clear()
+        self._merging = description if merge else None
+        self._stable = self._snapshot()
+        self._update_undo_actions()
+
+    def undo(self) -> None:
+        """Go back to the state before the last change (Ctrl+Z)."""
+        if self._undo:
+            self._go_to(self._undo.pop(), self._redo)
+
+    def redo(self) -> None:
+        """Make the last undone change again."""
+        if self._redo:
+            self._go_to(self._redo.pop(), self._undo)
+
+    def _go_to(self, step: _Step, other: List[_Step]) -> None:
+        """Show ``step``, keeping the current state in ``other``, which undoes that."""
+        other.append(self._snapshot(description=step.description,
+                                    replaced=step.replaced, current=self._location()))
+        config = copy.deepcopy(step.config)
+        config.time = self.time  # the time is not part of the changes
+        if step.replaced:  # back to that scope, with its configuration file
+            path, saved = step.config_path, step.saved
+        else:  # changes of the scope do not change the file it belongs to
+            path, saved = self.config_path, self._saved
+        self._show(config, path, saved, step.current)
+        self._merging = None
+        self._stable = self._snapshot()
+        self._update_undo_actions()
         self._session_changed()
 
+    def _update_undo_actions(self) -> None:
+        for action, steps, verb in ((self.undo_action, self._undo, "Undo"),
+                                    (self.redo_action, self._redo, "Redo")):
+            action.setEnabled(bool(steps))
+            action.setText(f"&{verb} {steps[-1].description}" if steps else f"&{verb}")
+
+    # ------------------------------------------------------------------ files
+
     def load_config_file(self, path) -> None:
-        self.show_config(load_config(path), path)
+        self.show_config(load_config(path), path, f"open {Path(path).name}")
         self._add_recent_file(path)
 
     def new_from_template(self, name: str) -> None:
@@ -632,14 +843,14 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         config.sources = self.config.sources
         config.dd_version = self.config.dd_version
-        self.show_config(config)
+        self.show_config(config, description=f"template {name}")
 
     def new_config(self) -> None:
-        """Replace the layout by empty panels, keeping the sources."""
+        """Replace the layout by an empty panel, keeping the sources."""
         config = default_config()
         config.sources = self.config.sources
         config.dd_version = self.config.dd_version
-        self.show_config(config)
+        self.show_config(config, description="new")
 
     def open_config(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -689,9 +900,12 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Cannot save", str(exc))
             return
         self.config_path = path
+        self._saved = _layout(self.config)
+        self._stable = self._snapshot()  # a later Open or New goes back to this file
+        self._merging = None  # a drag after the save is a change of its own
         self._show_sources()
         self._update_title()
-        self.setWindowModified(False)
+        self._update_modified()
         self._add_recent_file(path)
         self._session_changed()
         self.status_label.setText(f"Saved {path}")
