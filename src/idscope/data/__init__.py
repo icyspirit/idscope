@@ -1,5 +1,6 @@
 """Data access layer of idscope: sources, signal paths and extraction."""
 
+from idscope.data.expressions import Expression, parse_signal
 from idscope.data.extract import (
     MAP,
     PROFILE,
@@ -39,6 +40,7 @@ __all__ = [
     "Axis",
     "Channels",
     "DataSource",
+    "Expression",
     "MapSeries",
     "ProfileSeries",
     "Range",
@@ -51,6 +53,7 @@ __all__ = [
     "extract_signal",
     "format_source_list",
     "parse_alternatives",
+    "parse_signal",
     "parse_signal_path",
     "parse_source",
     "parse_source_list",

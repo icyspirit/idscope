@@ -111,7 +111,7 @@ A template saved with File → Save as becomes a configuration that can be edite
 | jScope | idscope |
 |---|---|
 | Shot field + Apply | **Sources** field + Apply: comma-separated sources, optionally `label=source` |
-| Expression (TDI) | Signal **path**, e.g. `equilibrium/time_slice/global_quantities/ip`, with scale and offset |
+| Expression (TDI) | Signal **path**, e.g. `equilibrium/time_slice/global_quantities/ip`, with scale and offset, or arithmetic of paths (`a - b`, `a / b`, `deriv(a)`) |
 | Browse signals | **IDS browser** (left): double-click or drag a quantity onto a panel |
 | Wave setup (double-click) | **Setup** dialog: double-click a panel (or Enter) |
 | Zoom / Point / Pan modes | **Pan** (default) / **Zoom** / **Point** in the toolbar (P, Z, C) |
@@ -297,6 +297,26 @@ distribution_sources/source[:]/ggd/particles[0]/values   a map per source, on a 
   `psi` go from the magnetic axis to the boundary, `norm(.../psi)` is psi_n. As x
   path, `core_profiles/profiles_1d/grid/rho_tor_norm | norm(core_profiles/profiles_1d/grid/psi)`
   draws against rho_tor_norm, or against psi_n when rho_tor_norm is not filled.
+- Signals can be computed from others: `+`, `-`, `*` and `/` combine signals and
+  numbers, with parentheses, and `deriv(x)` (along time for traces, along the
+  coordinate for profiles), `abs(x)` and `norm(x)` apply to them. Since `/` also
+  separates the nodes of a path, a division has spaces around it: `a / b`.
+
+  ```
+  equilibrium/time_slice/global_quantities/ip - summary/global_quantities/ip/value
+  core_profiles/profiles_1d/t_i_average / core_profiles/profiles_1d/electrons/temperature
+  core_profiles/profiles_1d/electrons/temperature / core_profiles/profiles_1d/electrons/temperature[0]
+  deriv(summary/global_quantities/ip/value) * 1e-6
+  abs(pf_active/coil[:]/current/data)
+  ```
+
+  Two signals are combined on the times and the grid of the first: the second is
+  interpolated in time for traces, and taken at its closest time slice (within its
+  time range) and interpolated on the grid of the first for profiles and maps. A
+  time trace applies to profiles and maps at their times, e.g. a profile divided by
+  its central value. Signals with wildcards combine member by member (by name), or
+  each member with the same signal. The result is labeled with the expression, and
+  its units follow (a ratio of like quantities has none).
 
 Data stored with another major Data Dictionary version than the one idscope uses
 (e.g. DD 3 data with DD 4) is shown in its own version, so paths use that version's
@@ -322,6 +342,16 @@ level instead of an image.
 When a panel compares several sources, curves take the color of their signal (or
 member, e.g. coil) and the line style of their source; the legend has an entry for
 each, instead of one for every combination.
+
+A panel can also show every source but the first relative to the first, signal by
+signal (*sources* in the setup dialog, or *Sources* in the menu of the panel, or
+`relative:` in the configuration): `difference` shows B − A and `ratio` B / A, on
+the times and the grid of B, as the arithmetic of signals does. The first source is
+then not drawn, and the legend says what is compared (`[B − A]`). The scale of a
+signal still applies to a difference; its offset, which cancels out, does not, and
+a ratio has neither. Shapes cannot be compared: a map of the difference keeps the
+boundary of each source, for one. With a single source, the panel shows it as it
+is.
 
 A graph against time says nothing of data that is all at one and the same time,
 such as what a code gives for the time it was run for. A trace panel then shows
@@ -365,7 +395,8 @@ columns:
 ```
 
 Panel options: `title`, `kind`, `signals`, `x_label`, `y_label`, `x_range`, `y_range`,
-`log_x`, `log_y`, `legend`, `equal_aspect`, `contours`, `height`. Signal options:
+`log_x`, `log_y`, `legend`, `equal_aspect`, `contours`, `height`, `relative`
+(`difference` or `ratio`: the sources relative to the first). Signal options:
 `path`, `label`, `scale`, `offset`, `x`, `color`, `sources`. Other top-level options:
 `share_x` (share x axes and stack panels tightly, default true) and `dd_version`.
 

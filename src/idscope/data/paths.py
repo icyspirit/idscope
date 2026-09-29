@@ -43,6 +43,9 @@ Rules:
   its index), as ``numpy.transpose``: ``transpose(path, 1, 0, 2)`` puts the second
   dimension first. Without axes, their order is reversed (``2, 1, 0`` for three).
   Dimensions are otherwise never reordered, and time is one like the others.
+
+Signals computed from paths, such as ``a - b`` or ``deriv(a)``, are parsed and
+evaluated by :mod:`idscope.data.expressions`; :func:`parse_alternatives` reads both.
 """
 
 import dataclasses
@@ -169,20 +172,23 @@ def _format_selector(selector: Selector) -> str:
 ALTERNATIVE_SEPARATOR = "|"
 
 
-def parse_alternatives(text: str) -> List[SignalPath]:
-    """Parse alternative paths ``a | b | ...``, to be tried in order.
+def parse_alternatives(text: str) -> list:
+    """Parse alternative signals ``a | b | ...``, to be tried in order: paths, or
+    expressions of paths (:mod:`idscope.data.expressions`).
 
     Alternatives let one configuration work with data that uses different names,
     e.g. ``core_profiles/profiles_1d/j_phi | core_profiles/profiles_1d/j_tor`` for
     Data Dictionary 4 and 3.
 
     Raises:
-        PathError: when one of the paths is malformed.
+        PathError: when one of the alternatives is malformed.
     """
+    from idscope.data.expressions import parse_signal
+
     parts = text.split(ALTERNATIVE_SEPARATOR)
     if len(parts) > 1 and any(not part.strip() for part in parts):
         raise PathError(f"Empty alternative in '{text.strip()}'.")
-    return [parse_signal_path(part) for part in parts]
+    return [parse_signal(part) for part in parts]
 
 
 def parse_signal_path(text: str) -> SignalPath:
