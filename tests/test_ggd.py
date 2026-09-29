@@ -3,9 +3,11 @@
 import numpy as np
 import pytest
 
-from idscope.data import MeshSeries, ProfileSeries, parse_signal_path
-from idscope.data.extract import _children, _grid_mesh, extract_signal
+from idscope.data import Axis, MapSeries, MeshSeries, ProfileSeries, Trace, parse_signal_path
+from idscope.data.expressions import combine, derivative, parse_signal, relative_to
+from idscope.data.extract import Mesh, _children, _grid_mesh, extract_signal
 from idscope.demo import EDGE_GRID, EDGE_TIMES
+from idscope.errors import PathError
 
 TE = "edge_profiles/ggd/electrons/temperature[0]/values"
 NE = "edge_profiles/ggd/electrons/density[0]/values"
@@ -202,3 +204,85 @@ def test_values_that_do_not_fit_are_a_profile():
     data = extract_signal(ids, parse_signal_path("edge_profiles/ggd/electrons/"
                                                  "temperature[0]/values"))
     assert isinstance(data, ProfileSeries)
+
+
+# ---------------------------------------------------------------------------------
+# Arithmetic
+# ---------------------------------------------------------------------------------
+
+TWO_CELLS = Mesh(SQUARES, [[0, 1, 4, 3], [1, 2, 5, 4]])
+
+
+def on_cells(time, values, mesh=TWO_CELLS):
+    """Values on the cells of ``mesh`` (or of a mesh per slice): a row per slice."""
+    values = np.atleast_2d(np.asarray(values, dtype=float))
+    meshes = mesh if isinstance(mesh, list) else [mesh] * len(values)
+    return MeshSeries(parse_signal_path(TE), None if time is None else np.asarray(time),
+                      len(values), lambda i: (meshes[i], values[i]), Axis("te", "eV"))
+
+
+def test_arithmetic_on_cells():
+    a = on_cells([0.0, 1.0], [[1.0, 2.0], [3.0, 4.0]])
+    b = on_cells([0.0, 1.0], [[1.0, 1.0], [2.0, 2.0]])
+    mesh, values = combine("-", a, b).at_index(1)
+    assert mesh is TWO_CELLS
+    np.testing.assert_allclose(values, [1.0, 2.0])  # cell by cell
+    np.testing.assert_allclose(combine("*", 2.0, a).at_index(0)[1], [2.0, 4.0])
+    # the same cells on points of their own (e.g. another run): the same grid
+    copy = on_cells([0.0, 1.0], [[1.0, 1.0], [2.0, 2.0]],
+                    Mesh(list(SQUARES), [[0, 1, 4, 3], [1, 2, 5, 4]]))
+    np.testing.assert_allclose(combine("/", a, copy).at_index(1)[1], [1.5, 2.0])
+    # the closest slice of the second, within its time range
+    late = on_cells([1.0], [[5.0, 5.0]])
+    assert np.isnan(combine("+", a, late).at_index(0)[1]).all()
+    np.testing.assert_allclose(combine("+", a, late).at_index(1)[1], [8.0, 9.0])
+    # a static grid at the times of a trace
+    ramp = Trace(parse_signal_path(TE), np.array([0.0, 1.0, 2.0]),
+                 np.array([1.0, 2.0, 3.0]), Axis("ip", "A"))
+    scaled = combine("*", on_cells(None, [1.0, 2.0]), ramp)
+    assert scaled.count == 3 and scaled.value_axis.units == "eV.A"
+    np.testing.assert_allclose(scaled.at_index(2)[1], [3.0, 6.0])
+
+
+def test_cells_of_other_grids():
+    a = on_cells([0.0, 1.0], [[1.0, 2.0], [3.0, 4.0]])
+    three = Mesh(SQUARES + [(1.5, 2.0)], [[0, 1, 4, 3], [1, 2, 5, 4], [4, 5, 6]])
+    with pytest.raises(PathError, match=r"different grids \(2 and 3 cells\)"):
+        combine("-", a, on_cells([0.0], [[1.0, 2.0, 3.0]], three))
+    # the same grid first, and then one that moved: no values then
+    moved = Mesh([(r + 1.0, z) for r, z in SQUARES], [[0, 1, 4, 3], [1, 2, 5, 4]])
+    b = on_cells([0.0, 1.0], [[1.0, 1.0], [1.0, 1.0]], [TWO_CELLS, moved])
+    difference = combine("-", a, b)
+    np.testing.assert_allclose(difference.at_index(0)[1], [0.0, 1.0])
+    assert np.isnan(difference.at_index(1)[1]).all()
+    # other maps and profiles, and derivatives: refused
+    x = np.linspace(0.0, 1.0, 3)
+    plane = MapSeries(parse_signal_path(TE), None, 1, lambda i: (x, x, np.zeros((3, 3))),
+                      Axis("R", "m"), Axis("Z", "m"), Axis("psi", "Wb"))
+    with pytest.raises(PathError, match="values on the cells of a grid combine with"):
+        combine("-", plane, a)
+    with pytest.raises(PathError, match="deriv"):
+        derivative(a)
+
+
+def test_expressions_on_the_demo(source_a, data_dir):
+    from idscope.data import DataSource, parse_source
+
+    mesh, te, _ = get(source_a, TE).at(6.0)
+    _, ne, _ = get(source_a, NE).at(6.0)  # on the nodes, given to the cells
+    per_ev = source_a.signal(parse_signal(f"{NE} / {TE}"))
+    assert isinstance(per_ev, MeshSeries) and per_ev.value_axis.units == "m^-3/eV"
+    same, values, _ = per_ev.at(6.0)
+    assert same is mesh
+    np.testing.assert_allclose(values, ne / te)
+    # a time trace, at the time of each slice
+    ip = get(source_a, "summary/global_quantities/ip/value")
+    per_ampere = source_a.signal(parse_signal(f"abs({TE}) / {ip.path.text}"))
+    np.testing.assert_allclose(per_ampere.at(6.0)[1],
+                               te / np.interp(6.0, ip.time, ip.values))
+    # B − A: the demo B is 80 % of A, on the same grid
+    source_b = DataSource(parse_source(f"B={data_dir / 'b.nc'}"))
+    difference = relative_to(get(source_b, TE), get(source_a, TE), "difference")
+    assert difference.value_axis.label.startswith("Δ ")
+    np.testing.assert_allclose(difference.at(6.0)[1], -0.2 * te, rtol=1e-9)
+    source_b.close()

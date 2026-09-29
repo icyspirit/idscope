@@ -322,9 +322,11 @@ distribution_sources/source[:]/ggd/particles[0]/values   a map per source, on a 
   interpolated in time for traces, and taken at its closest time slice (within its
   time range) and interpolated on the grid of the first for profiles and maps. A
   time trace applies to profiles and maps at their times, e.g. a profile divided by
-  its central value. Signals with wildcards combine member by member (by name), or
-  each member with the same signal. The result is labeled with the expression, and
-  its units follow (a ratio of like quantities has none).
+  its central value. Values on the cells of an unstructured grid combine cell by
+  cell with values on the same grid (e.g. two runs of an edge code), not with other
+  grids. Signals with wildcards combine member by member (by name), or each member
+  with the same signal. The result is labeled with the expression, and its units
+  follow (a ratio of like quantities has none).
 
 Data stored with another major Data Dictionary version than the one idscope uses
 (e.g. DD 3 data with DD 4) is shown in its own version, so paths use that version's

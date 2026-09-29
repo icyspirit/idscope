@@ -599,7 +599,8 @@ class Panel(QtWidgets.QFrame):
         # as itself for its shapes; the line styles stand for the sources of the
         # lines (the data of a map is an image)
         sources_shown = _sources_of(accepted, lambda data: True)
-        line_sources = _sources_of(accepted, lambda data: not isinstance(data, MapSeries))
+        line_sources = _sources_of(
+            accepted, lambda data: not isinstance(data, (MapSeries, MeshSeries)))
         # Compared sources are named even alone ("B − A")
         n_sources = max(len(sources_shown), 2 if self._compared else 1)
         n_signals = len(self.config.signals)

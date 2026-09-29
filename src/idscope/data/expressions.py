@@ -20,7 +20,8 @@ Rules:
   interpolated in time for traces, and taken at its closest time slice (within its
   time range) and interpolated on the grid of the first for profiles and maps. A
   time trace combined with profiles or maps applies to each slice at its time,
-  e.g. a profile divided by its central value.
+  e.g. a profile divided by its central value. Values on the cells of an
+  unstructured grid combine cell by cell with values on the same grid.
 - A signal with wildcards (e.g. a trace per coil) is combined member by member with
   another one, by name, or with the same signal for all its members.
 
@@ -38,6 +39,7 @@ from idscope.data.extract import (
     Axis,
     Channels,
     MapSeries,
+    MeshSeries,
     ProfileSeries,
     Shapes,
     SignalData,
@@ -430,6 +432,8 @@ def combine(op: str, a: Value, b: Value, label: Optional[str] = None) -> Value:
     kinds = (type(a), type(b))
     if kinds == (Trace, Trace):
         return _traces(function, a, b, axis)
+    if isinstance(a, MeshSeries) or isinstance(b, MeshSeries):
+        return _meshes(function, a, b, axis)
     if isinstance(a, MapSeries) or isinstance(b, MapSeries):
         return _maps(function, a, b, axis)
     return _profiles(function, a, b, axis)
@@ -530,6 +534,13 @@ def _elementwise(data: SignalData, function, axis: Axis) -> SignalData:
 
         return MapSeries(data.path, data.time, data.count, load, data.x_axis,
                          data.x2_axis, axis, data.documentation, data.fixed_time)
+    if isinstance(data, MeshSeries):
+        def load_cells(index):
+            mesh, values = data.at_index(index)
+            return mesh, function(values)
+
+        return MeshSeries(data.path, data.time, data.count, load_cells, axis,
+                          data.documentation, data.fixed_time, on=data.on)
     raise PathError(f"'{data.path.text}' is a {data.kind}; it cannot be computed with.")
 
 
@@ -688,6 +699,64 @@ def _map_at(data: SignalData, t, x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
     if rows.size == 0:
         return np.full((len(x1), len(x2)), np.nan)
     return np.array([_interp(x1, own1, column) for column in rows.T]).T
+
+
+def _meshes(function, a: SignalData, b: SignalData, axis: Axis) -> MeshSeries:
+    """Values on the cells of a grid with values on the same cells (cell by cell),
+    or with the value of a trace at the time of each slice."""
+    for data in (a, b):
+        if not isinstance(data, (MeshSeries, Trace)):
+            raise PathError(
+                f"'{a.path.text}' and '{b.path.text}' cannot be combined: values on "
+                "the cells of a grid combine with values on the same cells, numbers "
+                "and time traces.")
+    if isinstance(a, MeshSeries) and isinstance(b, MeshSeries):
+        first, second = a.at_index(0)[0], b.at_index(0)[0]
+        if first is not None and second is not None and not _same_mesh(first, second):
+            raise PathError(
+                f"'{a.path.text}' and '{b.path.text}' are on different grids "
+                f"({len(first.cells)} and {len(second.cells)} cells); they cannot be "
+                "combined.")
+    base, time = _base(a, b, MeshSeries)
+
+    def load(index):
+        t = None if time is None else float(time[index])
+        mesh, _ = base.at_index(index if base.time is not None else 0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return mesh, function(_cells_at(a, t, mesh), _cells_at(b, t, mesh))
+
+    count = base.count if time is base.time else len(time)
+    return MeshSeries(base.path, time, count, load, axis, base.documentation,
+                      base.fixed_time, on=base.on)
+
+
+def _cells_at(data: SignalData, t: Optional[float], mesh) -> np.ndarray:
+    """The values of the cells of ``mesh`` in ``data`` at time ``t`` (or the value
+    of a trace then): NaN when ``data`` has no slice then, or is on another grid."""
+    count = len(mesh.cells) if mesh is not None else 0
+    if isinstance(data, Trace):
+        value = _at_times(data, None if t is None else np.array([t]))
+        return np.full(count, float(np.atleast_1d(value)[0]))
+    index = _slice_near(data, t)
+    own, values = data.at_index(index) if index is not None else (None, None)
+    if own is None or mesh is None or not _same_mesh(own, mesh):
+        return np.full(count, np.nan)
+    return values
+
+
+def _same_mesh(first, second) -> bool:
+    """Whether two meshes have the same cells, on the same points."""
+    if first is second:
+        return True
+    if len(first.cells) != len(second.cells) or first.points.shape != second.points.shape:
+        return False
+    if not np.allclose(first.points, second.points, equal_nan=True):
+        return False
+    sizes = [len(cell) for cell in first.cells]
+    if sizes != [len(cell) for cell in second.cells]:
+        return False
+    return not sizes or np.array_equal(np.concatenate(first.cells),
+                                       np.concatenate(second.cells))
 
 
 def _renamed(data: SignalData, path) -> SignalData:

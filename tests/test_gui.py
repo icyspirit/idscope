@@ -1266,3 +1266,28 @@ def test_compact_exponents_on_color_bars():
 
     assert [_compact_exponent(text) for text in ("2e+19", "1.5e+19", "1e-05", "800")] == [
         "2e19", "1.5e19", "1e-5", "800"]
+
+
+def test_unstructured_grids_relative_to_the_first(make_window, data_dir):
+    """B − A and B / A of values on the cells of the same grid, cell by cell."""
+    from idscope.gui.mesh import MeshItem
+
+    window = show(make_window, [f"A={data_dir / 'a.nc'}", f"B={data_dir / 'b.nc'}"], {
+        "kind": "map", "relative": "difference",
+        "signals": ["edge_profiles/ggd/electrons/temperature[0]/values",
+                    {"path": "equilibrium/time_slice/boundary/outline", "label": "boundary"}]})
+    window.set_time(6.0)
+    panel = window.panels[0]
+    assert not panel.errors and isinstance(panel._image, MeshItem)
+    assert [c.name for c in panel.curves] == [
+        "temperature[0]/values [B − A]", "boundary [A]", "boundary [B]"]
+    assert panel._colorbar.getAxis("left").labelText.startswith("Δ temperature[0]/values")
+    # the line styles stand for the sources of the boundaries, as they are
+    assert [label.text for _, label in panel.legend.items][-2:] == ["A", "B"]
+    difference = panel._image._values.copy()
+    panel.set_relative("ratio")
+    np.testing.assert_allclose(panel._image._values, 0.8, rtol=1e-9)  # B is 80 % of A
+    panel.set_relative(None)
+    assert [c.source for c in panel.curves][:2] == ["A", "B"]
+    np.testing.assert_allclose(difference, -0.2 * panel.curves[0].data.at(6.0)[1],
+                               rtol=1e-9)
