@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 MAX_TRACE_STEPS = 2001
 """Number of slider steps when only traces (no profiles or maps) are shown."""
 MODES = ("pan", "zoom", "point")
+MODE_KEYS = {"pan": "P", "zoom": "Z", "point": "C"}
+"""Keys of the mouse modes, on the plots."""
 MAX_RECENT_FILES = 10
 SESSION_DELAY_MS = 1000
 """The session is written this long after the last change, and when closing."""
@@ -177,6 +179,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.panel_area = QtWidgets.QWidget()
         self.panel_area_layout = QtWidgets.QVBoxLayout(self.panel_area)
         self.panel_area_layout.setContentsMargins(0, 0, 0, 0)
+        self._build_plot_keys()
         central_layout.addWidget(self.panel_area, stretch=1)
         central_layout.addWidget(self.timebar)
         self.setCentralWidget(central)
@@ -189,6 +192,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.coordinates_label = QtWidgets.QLabel()
         self.statusBar().addPermanentWidget(self.coordinates_label)
         self._logged_notes = set()
+        self._shortcuts_dialog: Optional[QtWidgets.QDialog] = None
 
         self._show_sources()
         self.build_panels()
@@ -219,7 +223,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             action = QtGui.QAction(text, self)
             action.setCheckable(True)
-            action.setToolTip(tip)
+            action.setToolTip(f"{tip} ({MODE_KEYS[mode]})")
             action.triggered.connect(lambda checked, m=mode: self.set_mode(m))
             self.mode_group.addAction(action)
             toolbar.addAction(action)
@@ -227,7 +231,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mode_actions[self.mode].setChecked(True)
         toolbar.addSeparator()
         autoscale = toolbar.addAction("Autoscale all")
-        autoscale.setToolTip("Autoscale all panels (a double-click opens the setup)")
+        autoscale.setToolTip("Autoscale all panels (Shift+A; A autoscales the current "
+                             "panel)")
         autoscale.triggered.connect(self.autoscale_all)
         toolbar.addSeparator()
         toolbar.addWidget(QtWidgets.QLabel(" Sources: "))
@@ -272,15 +277,16 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_menus(self) -> None:
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
+        # The same keys on every platform (some have no Quit or Save as key)
         for text, shortcut, slot in (
-            ("&New", QtGui.QKeySequence.StandardKey.New, self.new_config),
-            ("&Open…", QtGui.QKeySequence.StandardKey.Open, self.open_config),
-            ("&Save", QtGui.QKeySequence.StandardKey.Save, self.save),
-            ("Save &as…", QtGui.QKeySequence.StandardKey.SaveAs, self.save_as),
+            ("&New", "Ctrl+N", self.new_config),
+            ("&Open…", "Ctrl+O", self.open_config),
+            ("&Save", "Ctrl+S", self.save),
+            ("Save &as…", "Ctrl+Shift+S", self.save_as),
             (None, None, None),
-            ("&Export image…", QtGui.QKeySequence("Ctrl+E"), self.export_image_dialog),
+            ("&Export image…", "Ctrl+E", self.export_image_dialog),
             (None, None, None),
-            ("&Quit", QtGui.QKeySequence.StandardKey.Quit, self.close),
+            ("&Quit", "Ctrl+Q", self.close),
         ):
             if text is None:
                 file_menu.addSeparator()
@@ -302,10 +308,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         edit_menu = menu.addMenu("&Edit")
         self.undo_action = edit_menu.addAction("&Undo")
-        self.undo_action.setShortcuts(QtGui.QKeySequence.StandardKey.Undo)
+        self.undo_action.setShortcut(QtGui.QKeySequence("Ctrl+Z"))
         self.undo_action.triggered.connect(self.undo)
         self.redo_action = edit_menu.addAction("&Redo")
-        self.redo_action.setShortcuts(QtGui.QKeySequence.StandardKey.Redo)
+        self.redo_action.setShortcuts([QtGui.QKeySequence("Ctrl+Shift+Z"),
+                                       QtGui.QKeySequence("Ctrl+Y")])
         self.redo_action.triggered.connect(self.redo)
         edit_menu.addSeparator()
         self.delete_action = edit_menu.addAction("&Delete signals, then the empty panel")
@@ -320,17 +327,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.delete_action.triggered.connect(self.delete_in_current_panel)
 
         layout_menu = menu.addMenu("&Layout")
-        layout_menu.addAction("Add panel below current").triggered.connect(
-            lambda: self.change_layout(self.current_panel, "add_below")
-        )
-        layout_menu.addAction("Add column").triggered.connect(
-            lambda: self.change_layout(self.current_panel, "add_column")
-        )
-        layout_menu.addAction("Remove current panel").triggered.connect(
-            lambda: self.change_layout(self.current_panel, "remove")
-        )
+        for text, shortcut, action in (("Add panel below current", "Ctrl+Shift+Down",
+                                        "add_below"),
+                                       ("Add column", "Ctrl+Shift+Right", "add_column"),
+                                       ("Remove current panel", None, "remove")):
+            item = layout_menu.addAction(text)
+            if shortcut:
+                item.setShortcut(QtGui.QKeySequence(shortcut))
+            item.triggered.connect(
+                lambda checked=False, a=action: self.change_layout(self.current_panel, a)
+            )
         layout_menu.addSeparator()
-        layout_menu.addAction("Setup current panel…").triggered.connect(
+        # "\t": the key is shown, but only works on the plots (see _build_plot_keys)
+        layout_menu.addAction("Setup current panel…\tEnter").triggered.connect(
             lambda: self.open_setup(self.current_panel)
         )
 
@@ -351,16 +360,70 @@ class MainWindow(QtWidgets.QMainWindow):
         self.share_x_action.triggered.connect(
             lambda checked=False: self._changed("shared x axes")
         )
-        view_menu.addAction("Autoscale all").triggered.connect(self.autoscale_all)
+        view_menu.addAction("Autoscale current panel\tA").triggered.connect(
+            self.autoscale_current
+        )
+        view_menu.addAction("Autoscale all\tShift+A").triggered.connect(self.autoscale_all)
         view_menu.addSeparator()
-        for text, shortcut, delta in (("Previous time slice", "Ctrl+Left", -1),
-                                      ("Next time slice", "Ctrl+Right", 1)):
+        for text, shortcut, slot in (
+            ("Previous time slice", "Ctrl+Left", lambda: self.timebar.step(-1)),
+            ("Next time slice", "Ctrl+Right", lambda: self.timebar.step(1)),
+            ("First time slice", "Ctrl+Home", lambda: self.timebar.go_to(0)),
+            ("Last time slice", "Ctrl+End", lambda: self.timebar.go_to(-1)),
+        ):
             action = view_menu.addAction(text)
             action.setShortcut(QtGui.QKeySequence(shortcut))
-            action.triggered.connect(lambda checked=False, d=delta: self.timebar.step(d))
+            action.triggered.connect(slot)
+        view_menu.addSeparator()
+        for text, shortcut, slot in (("Go to the sources", "Ctrl+L", self.focus_sources),
+                                     ("Go to the IDS browser filter", "Ctrl+F",
+                                      self.focus_filter),
+                                     ("Go to the time", "Ctrl+T", self.focus_time),
+                                     ("Back to the panels", "Esc", self.focus_panels)):
+            action = view_menu.addAction(text)
+            action.setShortcut(QtGui.QKeySequence(shortcut))
+            action.triggered.connect(slot)
+        view_menu.addSeparator()
+        self.full_screen_action = view_menu.addAction("Full screen")
+        self.full_screen_action.setCheckable(True)
+        self.full_screen_action.setShortcut(QtGui.QKeySequence("F11"))
+        self.full_screen_action.toggled.connect(self.set_full_screen)
 
         help_menu = menu.addMenu("&Help")
+        shortcuts_action = help_menu.addAction("Keyboard shortcuts")
+        shortcuts_action.setShortcut(QtGui.QKeySequence("F1"))
+        shortcuts_action.triggered.connect(self.show_shortcuts)
         help_menu.addAction("About idscope").triggered.connect(self._about)
+
+    def _build_plot_keys(self) -> None:
+        """Single keys for the panels, which work once the keyboard is in them (after
+        a click on a panel): text fields, lists and dialogs keep their keys."""
+        def setup():
+            self.open_setup(self.current_panel)
+
+        # (what the keys do, [(key, slot), ...]); keys with the same slot are
+        # alternatives, of which the first is shown (Enter, Return)
+        self.plot_keys = [
+            ("Select the panel above, below, on the left or on the right",
+             [("Up", lambda: self.select_panel(0, -1)),
+              ("Down", lambda: self.select_panel(0, 1)),
+              ("Left", lambda: self.select_panel(-1, 0)),
+              ("Right", lambda: self.select_panel(1, 0))]),
+            ("Previous, next time slice", [(",", lambda: self.timebar.step(-1)),
+                                           (".", lambda: self.timebar.step(1))]),
+            ("Pan, Zoom, Point mode", [(MODE_KEYS[mode], lambda m=mode: self.set_mode(m))
+                                       for mode in MODES]),
+            ("Autoscale the current panel", [("A", self.autoscale_current)]),
+            ("Autoscale all panels", [("Shift+A", self.autoscale_all)]),
+            ("Setup of the current panel", [("Enter", setup), ("Return", setup)]),
+            ("Previous, next image of the current panel (Show)",
+             [("[", lambda: self.step_image(-1)), ("]", lambda: self.step_image(1))]),
+        ]
+        for _, keys in self.plot_keys:
+            for key, slot in keys:
+                shortcut = QtGui.QShortcut(QtGui.QKeySequence(key), self.panel_area)
+                shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+                shortcut.activated.connect(slot)
 
     # ----------------------------------------------------------------- panels
 
@@ -653,6 +716,115 @@ class MainWindow(QtWidgets.QMainWindow):
     def autoscale_all(self) -> None:
         for panel in self.panels:
             panel.autoscale()
+
+    def autoscale_current(self) -> None:
+        if self.current_panel is not None:
+            self.current_panel.autoscale()
+
+    def select_panel(self, columns: int, rows: int) -> None:
+        """Make the panel ``rows`` below (or ``columns`` to the right of) the current
+        one the current panel, with the keyboard: in another column, the panel
+        closest in height."""
+        if self.current_panel is None:
+            return
+        c, p = self._locate(self.current_panel)
+        if columns:
+            target = min(max(c + columns, 0), len(self.column_panels) - 1)
+            if target != c:
+                middle = self._middle(self.current_panel)
+                p = min(range(len(self.column_panels[target])),
+                        key=lambda i: abs(self._middle(self.column_panels[target][i])
+                                          - middle))
+            c = target
+        panels = self.column_panels[c]
+        self.set_current_panel(panels[min(max(p + rows, 0), len(panels) - 1)])
+        self._focus_current_panel()
+
+    def _middle(self, panel: Panel) -> int:
+        """Height of the middle of a panel, in the panel area."""
+        return panel.mapTo(self.panel_area, QtCore.QPoint(0, panel.height() // 2)).y()
+
+    def step_image(self, delta: int) -> None:
+        if self.current_panel is not None:
+            self.current_panel.step_image(delta)
+
+    # ------------------------------------------------------------- keyboard
+
+    def focus_sources(self) -> None:
+        self.sources_edit.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        self.sources_edit.selectAll()
+
+    def focus_filter(self) -> None:
+        self.browser_dock.show()
+        self.browser.filter.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        self.browser.filter.selectAll()
+
+    def focus_time(self) -> None:
+        self.timebar.spin.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        self.timebar.spin.selectAll()
+
+    def focus_panels(self) -> None:
+        """Give the keyboard back to the current panel (e.g. from a text field)."""
+        self._focus_current_panel()
+
+    def set_full_screen(self, full: bool) -> None:
+        state = self.windowState() & ~QtCore.Qt.WindowState.WindowFullScreen
+        if full:
+            state |= QtCore.Qt.WindowState.WindowFullScreen
+        self.setWindowState(state)
+
+    def shortcut_rows(self) -> List[Tuple[str, List[Tuple[str, str]]]]:
+        """The keyboard shortcuts, as ``(group, [(keys, what they do), ...])``."""
+        native = QtGui.QKeySequence.SequenceFormat.NativeText
+        actions = [action for menu_action in self.menuBar().actions()
+                   for action in menu_action.menu().actions()]
+        actions += self.findChild(QtWidgets.QToolBar, "main_toolbar").actions()
+        anywhere, seen = [], set()
+        for action in actions:
+            keys = [k.toString(native) for k in action.shortcuts()]
+            text = action.text().split("\t")[0].replace("&", "").rstrip("…")
+            if keys and text not in seen:
+                seen.add(text)
+                anywhere.append((", ".join(keys), text))
+        on_panels = []
+        for text, keys in self.plot_keys:
+            shown, slots = [], []
+            for key, slot in keys:
+                if slot not in slots:
+                    shown.append(QtGui.QKeySequence(key).toString(native))
+                    slots.append(slot)
+            on_panels.append(("  ".join(shown), text))
+        return [("On the panels, after a click on one", on_panels),
+                ("Anywhere (text fields keep the keys they use)", anywhere)]
+
+    def show_shortcuts(self) -> None:
+        """List the keyboard shortcuts (F1), in a window that can stay open."""
+        if self._shortcuts_dialog is not None:
+            self._shortcuts_dialog.show()
+            self._shortcuts_dialog.raise_()
+            self._shortcuts_dialog.activateWindow()
+            return
+        tables = []
+        for group, keys in self.shortcut_rows():
+            rows = "".join(f"<tr><td style='padding-right: 14px'><b>"
+                           f"{key.replace('  ', '&nbsp;&nbsp; ')}</b></td>"
+                           f"<td>{text}</td></tr>" for key, text in keys)
+            tables.append(f"<p><b>{group}</b></p><table>{rows}</table>")
+        dialog = QtWidgets.QDialog(self)  # not modal: keys can be tried meanwhile
+        dialog.setWindowTitle("Keyboard shortcuts")
+        layout = QtWidgets.QVBoxLayout(dialog)
+        label = QtWidgets.QLabel("<table><tr><td valign='top' style='padding-right: "
+                                 f"28px'>{tables[0]}</td><td valign='top'>{tables[1]}"
+                                 "</td></tr></table>")
+        label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        layout.addWidget(label)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Close
+        )
+        buttons.rejected.connect(dialog.close)
+        layout.addWidget(buttons)
+        dialog.show()
+        self._shortcuts_dialog = dialog
 
     def _set_share_x(self, shared: bool) -> None:
         self.config.share_x = shared
@@ -1065,6 +1237,16 @@ class MainWindow(QtWidgets.QMainWindow):
             "A lightweight jScope-like viewer for IMAS IDS data, "
             "built on imas-python and pyqtgraph.",
         )
+
+    def changeEvent(self, event: QtCore.QEvent) -> None:
+        action = getattr(self, "full_screen_action", None)  # once the menus exist
+        if event.type() == QtCore.QEvent.Type.WindowStateChange and action is not None:
+            # e.g. full screen left through the window manager
+            with QtCore.QSignalBlocker(action):
+                action.setChecked(
+                    bool(self.windowState() & QtCore.Qt.WindowState.WindowFullScreen)
+                )
+        super().changeEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         if self.persist:

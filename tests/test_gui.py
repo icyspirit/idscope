@@ -809,3 +809,119 @@ def test_bars_at_one_time_leave_the_time_bar_to_the_others(make_window, one_time
     assert window.timebar.slider.isEnabled()
     window.set_time(2.0)
     assert "t = 5 s" in window.panels[1].title_item.textItem.toPlainText()
+
+
+def test_keys_on_the_panels(window, qtbot, monkeypatch):
+    Key, Mod = QtCore.Qt.Key, QtCore.Qt.KeyboardModifier
+    activate(window, qtbot)
+    first = window.panels[0]
+    window.set_current_panel(first)
+    first.graphics.setFocus()
+
+    def press(key, modifier=Mod.NoModifier):
+        qtbot.keyClick(QtWidgets.QApplication.focusWidget(), key, modifier)
+        return window._locate(window.current_panel)
+
+    # arrows select the panels, and the keyboard goes with them
+    assert press(Key.Key_Down) == (0, 1)
+    assert window._panels_have_focus()
+    assert press(Key.Key_Right) == (1, 1)  # in the next column, at the same height
+    assert press(Key.Key_Right) == (2, 0)
+    assert press(Key.Key_Right) == (2, 0)  # the last column
+    assert press(Key.Key_Left) == (1, 1)  # the closest in height to the map
+    assert press(Key.Key_Up) == (1, 0)
+    assert press(Key.Key_Up) == (1, 0)  # the first panel
+    # , and . step through the time slices
+    time = window.time
+    press(Key.Key_Period)
+    assert window.time == pytest.approx(time + 0.25)
+    press(Key.Key_Comma)
+    assert window.time == pytest.approx(time)
+    # mouse modes
+    for key, mode in ((Key.Key_Z, "zoom"), (Key.Key_C, "point"), (Key.Key_P, "pan")):
+        press(key)
+        assert window.mode == mode and window.mode_actions[mode].isChecked()
+    # autoscale the current panel, or all of them
+    views = [panel.plot.getViewBox() for panel in window.panels]
+    for view in views:
+        view.setXRange(0.0, 1.0)
+    press(Key.Key_A)
+    assert [view.autoRangeEnabled()[0] for view in views] == [
+        panel is window.current_panel for panel in window.panels
+    ]
+    press(Key.Key_A, Mod.ShiftModifier)
+    assert all(view.autoRangeEnabled()[0] for view in views)
+    # the images of a map, and the setup of the current panel
+    window.set_current_panel(window.panels[6])
+    selector = window.panels[6].image_selector
+    press(Key.Key_BracketRight)
+    assert selector.currentIndex() == 1
+    press(Key.Key_BracketRight)
+    assert selector.currentIndex() == 0  # round the end
+    press(Key.Key_BracketLeft)
+    assert selector.currentIndex() == 1
+    opened = []
+    monkeypatch.setattr(window, "open_setup", opened.append)
+    press(Key.Key_Return)
+    assert opened == [window.panels[6]]
+
+    # text fields and the IDS browser keep their keys
+    window.sources_edit.setFocus()
+    text = window.sources_edit.text()
+    for key in (Key.Key_P, Key.Key_Down, Key.Key_Period):
+        qtbot.keyClick(window.sources_edit, key)
+    assert window.sources_edit.text() == text + "p."
+    assert window.mode == "pan" and window.current_panel is window.panels[6]
+
+
+def test_keys_anywhere(window, qtbot):
+    Key, Mod = QtCore.Qt.Key, QtCore.Qt.KeyboardModifier
+    activate(window, qtbot)
+    window.set_current_panel(window.panels[0])
+
+    def press(key, modifier=Mod.ControlModifier):
+        qtbot.keyClick(QtWidgets.QApplication.focusWidget() or window, key, modifier)
+
+    # to the fields, and back to the panels
+    press(Key.Key_L)
+    assert window.sources_edit.hasFocus()
+    assert window.sources_edit.selectedText() == window.sources_edit.text()
+    press(Key.Key_Escape, Mod.NoModifier)
+    assert window.panels[0].graphics.hasFocus()
+    window.browser_dock.hide()
+    press(Key.Key_F)
+    assert window.browser_dock.isVisible() and window.browser.filter.hasFocus()
+    press(Key.Key_T)
+    assert window.timebar.spin.hasFocus()
+    # the first and the last time slices (in the time field, Ctrl+End is its own)
+    press(Key.Key_Escape, Mod.NoModifier)
+    press(Key.Key_End)
+    assert window.time == pytest.approx(10.0)
+    press(Key.Key_Home)
+    assert window.time == pytest.approx(0.0)
+    # a panel below the current one, and a column
+    n_panels, n_columns = len(window.panels), len(window.column_panels)
+    press(Key.Key_Down, Mod.ControlModifier | Mod.ShiftModifier)
+    assert len(window.panels) == n_panels + 1
+    assert window._locate(window.current_panel) == (0, 1)
+    press(Key.Key_Right, Mod.ControlModifier | Mod.ShiftModifier)
+    assert len(window.column_panels) == n_columns + 1
+    # full screen, and the list of the shortcuts
+    press(Key.Key_F11, Mod.NoModifier)
+    assert window.windowState() & QtCore.Qt.WindowState.WindowFullScreen
+    press(Key.Key_F11, Mod.NoModifier)
+    assert not window.windowState() & QtCore.Qt.WindowState.WindowFullScreen
+    assert not window.full_screen_action.isChecked()
+    press(Key.Key_F1, Mod.NoModifier)
+    dialog = window._shortcuts_dialog
+    assert dialog.isVisible()
+    dialog.close()
+    window.show_shortcuts()
+    assert window._shortcuts_dialog is dialog and dialog.isVisible()  # the same one
+    dialog.close()
+    on_panels, anywhere = (dict((text, keys) for keys, text in rows)
+                           for _, rows in window.shortcut_rows())
+    assert on_panels["Pan, Zoom, Point mode"] == "P  Z  C"
+    assert on_panels["Setup of the current panel"] == "Enter"
+    assert anywhere["Quit"] == "Ctrl+Q" and anywhere["Redo"] == "Ctrl+Shift+Z, Ctrl+Y"
+    assert anywhere["Reload"] == "F5"  # on the toolbar

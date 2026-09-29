@@ -91,6 +91,11 @@ class TimeBar(QtWidgets.QWidget):
         index = int(np.clip(index + delta, 0, len(self._grid) - 1))
         self._emit(float(self._grid[index]))
 
+    def go_to(self, index: int) -> None:
+        """Go to time slice ``index`` (e.g. -1: the last one)."""
+        if len(self._grid):
+            self._emit(float(self._grid[index]))
+
     def _nearest(self, t: float) -> int:
         return int(np.argmin(np.abs(self._grid - t)))
 
