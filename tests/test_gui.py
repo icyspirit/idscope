@@ -114,6 +114,48 @@ def test_errors_are_shown_in_panel(window):
     assert "not shown" in window.status_label.text()
 
 
+@pytest.fixture(scope="module")
+def only_summary(tmp_path_factory):
+    """A source with a summary and nothing else."""
+    import imas
+
+    from idscope.demo import summary
+
+    path = tmp_path_factory.mktemp("only_summary") / "summary.nc"
+    with imas.DBEntry(str(path), "w") as entry:
+        entry.put(summary(entry.factory))
+    return path
+
+
+def test_what_a_source_does_not_have_is_said_softly(make_window, data_dir,
+                                                     only_summary):
+    from idscope.gui.style import ERROR_COLOR, NOTE_COLOR
+
+    ip_panel = {"signals": ["equilibrium/time_slice/global_quantities/ip"]}
+    typo_panel = {"signals": ["equilibrium/time_slice/global_quantities/ipp"]}
+    window = show(make_window, [f"A={data_dir / 'a.nc'}", f"B={only_summary}"],
+                  ip_panel, typo_panel)
+    ip, typo = window.panels
+    # B has no equilibrium: a note in gray in the title line, the curve of A all
+    # the same, and no line of message taking room
+    assert ip.errors == [] and len(ip.notes) == 1 and len(ip.curves) == 1
+    assert "'equilibrium'" in ip.notes[0]
+    assert ip.message.isHidden()
+    assert ip.title_item.textItem.toPlainText().endswith("1 signal not filled")
+    assert NOTE_COLOR in ip.title_item.textItem.toHtml()
+    assert ip.title_item.toolTip() == ip.notes[0]
+    # a path that is wrong is an error, in red; B's missing IDS is a note
+    assert len(typo.errors) == 1 and len(typo.notes) == 1 and not typo.curves
+    assert ERROR_COLOR in typo.message.styleSheet()
+    assert typo.notes[0] in typo.message.toolTip()
+    assert window.status_label.text().endswith("; 1 not shown, 2 not filled (see View → Log)")
+    # when no source has it, the note itself, in gray
+    window = show(make_window, [f"B={only_summary}"], ip_panel)
+    (alone,) = window.panels
+    assert not alone.curves and alone.message.text() == alone.notes[0]
+    assert NOTE_COLOR in alone.message.styleSheet()
+
+
 def test_setup_dialog(window):
     from idscope.gui.setup_dialog import SetupDialog
 
