@@ -32,6 +32,8 @@ from idscope.data.sources import SourceSpec, parse_source, unique_labels
 from idscope.errors import ConfigError, IdscopeError
 
 KINDS = ("auto", "trace", "profile", "map", "spacetime")
+RELATIVE = ("difference", "ratio")
+"""How a panel can show the sources relative to the first one."""
 FORMAT_VERSION = 1
 
 
@@ -77,6 +79,9 @@ class PanelConfig:
     (0: image)."""
     height: float = 1.0
     """Relative height within the column."""
+    relative: Optional[str] = None
+    """Show every source but the first relative to the first: ``difference``
+    (B - A) or ``ratio`` (B / A), signal by signal (default: as they are)."""
 
 
 @dataclass
@@ -211,6 +216,9 @@ def _panel(data, where: str) -> PanelConfig:
     kind = data.get("kind", "auto")
     if kind not in KINDS:
         raise ConfigError(f"{where}: 'kind' must be one of {', '.join(KINDS)}.")
+    relative = data.get("relative")
+    if relative is not None and relative not in RELATIVE:
+        raise ConfigError(f"{where}: 'relative' must be one of {', '.join(RELATIVE)}.")
     signals = data.get("signals") or []
     if not isinstance(signals, list):
         raise ConfigError(f"{where}: 'signals' must be a list.")
@@ -228,6 +236,7 @@ def _panel(data, where: str) -> PanelConfig:
         equal_aspect=_bool(data, "equal_aspect", False, where),
         contours=_count(data, "contours", where),
         height=_number(data, "height", 1.0, where),
+        relative=relative,
     )
 
 

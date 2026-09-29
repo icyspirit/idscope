@@ -106,6 +106,8 @@ def test_default_values_are_omitted():
         ({"time": True}, "time"),
         ({"columns": [{"panels": [{"contours": -1}]}]}, "must not be negative"),
         ({"columns": [{"panels": [{"contours": 2.5}]}]}, "contours"),
+        ({"columns": [{"panels": [{"relative": "minus"}]}]},
+         "'relative' must be one of difference, ratio"),
     ],
 )
 def test_invalid(data, message):
@@ -144,3 +146,18 @@ def test_load_errors(tmp_path):
 def test_default_layout_is_a_single_panel():
     config = default_config()
     assert len(config.columns) == 1 and len(config.panels()) == 1
+
+
+def test_sources_relative_to_the_first(tmp_path):
+    config = config_from_dict({"columns": [{"panels": [
+        {"relative": "difference", "signals": ["summary/global_quantities/ip/value - "
+                                                "equilibrium/time_slice/global_quantities/ip"]},
+        {"relative": "ratio"}, {}]}]})
+    assert [panel.relative for panel in config.panels()] == ["difference", "ratio", None]
+    path = tmp_path / "relative.yaml"
+    save_config(config, path)
+    assert "relative: difference" in path.read_text()
+    again = load_config(path)
+    assert [panel.relative for panel in again.panels()] == ["difference", "ratio", None]
+    assert again.panels()[0].signals[0].path.endswith(" - equilibrium/time_slice/"
+                                                      "global_quantities/ip")

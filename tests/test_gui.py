@@ -1153,6 +1153,74 @@ def test_coordinates_are_rounded_to_the_view():
     assert _round_to_view(np.log10(123456.0), 3.0, log=True) == pytest.approx(123500.0)
 
 
+def test_expressions_in_a_panel(make_window, data_dir):
+    window = show(make_window, [f"A={data_dir / 'a.nc'}", f"B={data_dir / 'b.nc'}"], {
+        "signals": ["equilibrium/time_slice/global_quantities/ip - "
+                    "summary/global_quantities/ip/value", "sqrt(summary/global_quantities/ip/value)"]
+    })
+    panel = window.panels[0]
+    assert [c.name for c in panel.curves] == [
+        "global_quantities/ip - ip/value [A]", "global_quantities/ip - ip/value [B]"]
+    np.testing.assert_allclose(panel.curves[1].item.yData[-1], -1.6e6)
+    assert panel.errors == ["Invalid expression 'sqrt(summary/global_quantities/ip/value)': "
+                            "unknown function 'sqrt' (available: deriv, abs, norm, "
+                            "transpose)."]
+
+
+def test_sources_relative_to_the_first(window, make_window, data_dir):
+    """Every source but the first as its difference with the first, or its ratio to it."""
+    ip, te, psi = window.panels[0], window.panels[3], window.panels[6]
+    ip.set_relative("difference")
+    (curve,) = ip.curves
+    assert curve.name == "Ip (equilibrium) [B − A]"
+    # B has 80 % of A: B − A is 0.2 MA, and the scale of the signal (-1e-6) applies
+    np.testing.assert_allclose(curve.item.yData[-1], -0.2)
+    # which the crosshair of the Point mode reads
+    window.set_mode("point")
+    ip._on_move(ip.plot.getViewBox().mapViewToScene(QtCore.QPointF(5.0, -0.1)))
+    assert ip._cursor_items[2].textItem.toPlainText().splitlines()[1:] == [
+        "■ Ip (equilibrium) [B − A] = -0.2"]
+    window.set_mode("pan")
+    # a ratio has neither the scale (1e-3) nor the offset of the signal
+    te.config.signals[0].offset = 5.0
+    te.set_relative("ratio")
+    (curve,) = te.curves
+    assert curve.name == "electrons/temperature [B / A]"
+    np.testing.assert_allclose(curve.item.yData[:10], 0.8, rtol=0.01)
+    assert te.plot.getAxis("left").labelText == "Te [keV]"  # as configured
+    # a map: the image of B − A, with the boundary of each source as it is
+    psi.set_relative("difference")
+    assert [c.name for c in psi.curves] == [
+        "profiles_2d[0]/psi [B − A]", "boundary [A]", "boundary [B]"]
+    assert [label.text for _, label in psi.legend.items][-2:] == ["A", "B"]
+    assert psi._colorbar.getAxis("left").labelText.startswith("Δ profiles_2d[0]/psi")
+    # from the menu of the panel, and back, which can be undone
+    actions = dict((value, action) for action, value in ip._relative_actions)
+    actions[None].trigger()
+    assert window.panels[0].config.relative is None
+    assert [c.name for c in window.panels[0].curves] == [
+        "Ip (equilibrium) [A]", "Ip (equilibrium) [B]"]
+    window.undo()
+    assert window.panels[0].config.relative == "difference"
+    # with one source, the data as it is
+    alone = show(make_window, [f"A={data_dir / 'a.nc'}"],
+                 {"relative": "difference", "signals": ["summary/global_quantities/ip/value"]})
+    assert [c.name for c in alone.panels[0].curves] == ["ip/value"]
+
+
+def test_setup_dialog_relative(window):
+    from idscope.gui.setup_dialog import SetupDialog
+
+    panel = window.panels[3]
+    panel.config.relative = "ratio"
+    dialog = SetupDialog(panel.config, ["A", "B"], window)
+    assert dialog.relative.currentData() == "ratio"
+    dialog.relative.setCurrentIndex(1)
+    assert dialog.apply() and panel.config.relative == "difference"
+    dialog.relative.setCurrentIndex(0)
+    assert dialog.apply() and panel.config.relative is None
+
+
 def test_maps_on_unstructured_grids(make_window, data_dir):
     """The values of a GGD quantity on the cells of an unstructured grid: the cells
     filled with their colors, with a color bar."""
