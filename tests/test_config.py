@@ -139,3 +139,8 @@ def test_load_errors(tmp_path):
     bad.write_text("columns: [\n")
     with pytest.raises(ConfigError, match="not valid YAML"):
         load_config(bad)
+
+
+def test_default_layout_is_a_single_panel():
+    config = default_config()
+    assert len(config.columns) == 1 and len(config.panels()) == 1

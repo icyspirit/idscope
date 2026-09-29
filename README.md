@@ -47,7 +47,7 @@ Other ways to start:
 ```bash
 idscope                                      # continue the last session
 idscope shot.nc                              # the panels of the last session, other data
-idscope --new shot.nc                        # browse a netCDF file in empty panels
+idscope --new shot.nc                        # browse a netCDF file in an empty panel
 idscope -T equilibrium a.nc b.nc             # compare two sources with a template
 idscope scope.yaml                           # open a configuration
 idscope scope.yaml -s A=a.nc -s "ref=imas:hdf5?path=/data/entry"
@@ -116,7 +116,7 @@ Started without a configuration file or a template, it shows them again.
 |---|---|---|
 | `idscope` | of the last session | of the last session |
 | `idscope shot.nc` | of the last session | `shot.nc` |
-| `idscope --new shot.nc` | empty | `shot.nc` |
+| `idscope --new shot.nc` | one empty panel | `shot.nc` |
 | `idscope scope.yaml [shot.nc]` | of `scope.yaml` | of `scope.yaml`, or `shot.nc` |
 | `idscope -T NAME shot.nc` | of the template | `shot.nc` |
 

@@ -104,8 +104,8 @@ class ScopeConfig:
         return [panel for column in self.columns for panel in column.panels]
 
 
-def default_config(columns: int = 2, rows: int = 2) -> ScopeConfig:
-    """An empty layout of ``columns`` x ``rows`` panels."""
+def default_config(columns: int = 1, rows: int = 1) -> ScopeConfig:
+    """An empty layout of ``columns`` x ``rows`` panels (by default a single one)."""
     return ScopeConfig(
         columns=[ColumnConfig([PanelConfig() for _ in range(rows)]) for _ in range(columns)]
     )
