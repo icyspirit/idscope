@@ -1139,3 +1139,15 @@ def test_crosshair_on_log_axes(make_window, data_dir):
     np.testing.assert_allclose([dots.data["x"][0], dots.data["y"][0]],
                                [np.log10(x), np.log10(y)])
     assert window.coordinates_label.text().startswith(f"x = {x:.5g}, y = ")
+
+
+def test_coordinates_are_rounded_to_the_view():
+    from idscope.gui.panel import _format, _round_to_view
+
+    assert _format(_round_to_view(2.2e-16, 1.0)) == "0"
+    assert _format(_round_to_view(-1e-17, 5.3)) == "0"  # not -0
+    assert _round_to_view(1.23456, 10.0) == pytest.approx(1.23)
+    assert _round_to_view(-0.39994, 1.8) == pytest.approx(-0.4)
+    # on a log axis, the value, to what the decades shown resolve
+    assert _round_to_view(np.log10(0.39994), 1.8, log=True) == pytest.approx(0.4)
+    assert _round_to_view(np.log10(123456.0), 3.0, log=True) == pytest.approx(123500.0)

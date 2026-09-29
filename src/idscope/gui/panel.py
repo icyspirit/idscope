@@ -197,7 +197,7 @@ def _round_to_view(value: float, span: float, log: bool = False) -> float:
     if not (np.isfinite(value) and np.isfinite(step) and step > 0):
         return value
     step = 10.0 ** np.floor(np.log10(step))
-    return float(np.round(value / step) * step)
+    return float(np.round(value / step) * step) + 0.0  # not -0
 
 
 def _value_at(xs, ys, x: float, log_x: bool, tolerance: float) -> Optional[float]:
