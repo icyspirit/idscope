@@ -356,7 +356,9 @@ class Panel(QtWidgets.QFrame):
         )
 
     def set_current(self, current: bool) -> None:
-        color = style.CURRENT_PANEL_COLOR if current else "#c8c8c8"
+        """Frame the current panel; the others have no frame (their axes tell them
+        apart), which keeps them clear of gray lines."""
+        color = style.CURRENT_PANEL_COLOR if current else "transparent"
         self.setStyleSheet(f"Panel {{ border: 1px solid {color}; }}")
 
     def apply_config(self) -> None:

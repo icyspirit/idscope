@@ -162,8 +162,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._session_timer.setInterval(SESSION_DELAY_MS)
         self._session_timer.timeout.connect(self._write_session)
         self.resize(1300, 850)
-        # White around the plots as well (their headers, the time bar, the docks);
-        # the panels are told apart by their borders
+        # White around the plots as well (their headers, the time bar, the docks)
         palette = self.palette()
         palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor("white"))
         self.setPalette(palette)
@@ -376,6 +375,9 @@ class MainWindow(QtWidgets.QMainWindow):
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(4)
+        # Handles (of the columns too) without the grip the style would draw: only
+        # white between the panels
+        splitter.setStyleSheet("QSplitter::handle { background: transparent; }")
         # emitted when the user drags a handle, not when the window is resized
         splitter.splitterMoved.connect(self._on_splitter_moved)
         for column in self.config.columns:

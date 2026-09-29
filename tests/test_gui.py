@@ -42,6 +42,16 @@ def test_demo_layout(window):
     assert window.panels[6].image_selector.count() == 2
 
 
+def test_only_the_current_panel_is_framed(window):
+    from idscope.gui.style import CURRENT_PANEL_COLOR
+
+    window.set_current_panel(window.panels[2])
+    framed = [CURRENT_PANEL_COLOR in panel.styleSheet() for panel in window.panels]
+    assert framed == [i == 2 for i in range(len(window.panels))]
+    assert all("transparent" in panel.styleSheet()
+               for panel in window.panels if panel is not window.current_panel)
+
+
 def test_time_moves_profiles_and_maps(window):
     te, psi = window.panels[3], window.panels[6]
     y_before = te.curves[0].item.yData.copy()
