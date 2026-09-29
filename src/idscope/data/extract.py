@@ -44,8 +44,12 @@ PROFILE = "profile"
 MAP = "map"
 SHAPE = "shape"
 
-GEOMETRY, OUTLINE, POINT = "geometry", "outline", "point"
-"""Kinds of shapes: closed cross-sections, curves and points."""
+GEOMETRY, OUTLINE, POINT, MARKERS = "geometry", "outline", "point", "markers"
+"""Kinds of shapes: closed cross-sections, curves, points and the markers of a
+particle distribution (e.g. where the ions of a neutral beam are born)."""
+
+_R_INDEX, _Z_INDEX = 4, 3
+"""Indices of R and Z in the Data Dictionary's coordinate identifiers."""
 
 _GENERIC_NAMES = {"data", "value", "values", "dim1", "dim2", "dim3"}
 
@@ -292,7 +296,8 @@ class Channels(SignalData):
 class Shapes(SignalData):
     """Shapes in the poloidal plane, drawn over maps: closed cross-sections
     (``geometry``: coils, passive loops), curves (``outline``: walls, the plasma
-    boundary) or points (``point``: X-points, the magnetic axis).
+    boundary), points (``point``: X-points, the magnetic axis) or the (R, Z) of
+    the markers of a particle distribution (``markers``).
 
     ``slices[i]`` holds an array of (R, Z) rows per member at time slice ``i``
     (static shapes have one slice); rows of NaN separate the parts of a member.
@@ -364,12 +369,15 @@ def is_time_aos(meta) -> bool:
 
 def shape_kind(meta) -> Optional[str]:
     """The kind of shape a structure (or the elements of an array of structures)
-    describes: a Data Dictionary 2D geometry, an (r, z) curve or an (r, z) point."""
+    describes: a Data Dictionary 2D geometry, an (r, z) curve, an (r, z) point or
+    the markers of a particle distribution."""
     if meta.data_type not in (IDSDataType.STRUCTURE, IDSDataType.STRUCT_ARRAY):
         return None
     children = {child.name: child for child in meta}
     if {"geometry_type", "outline", "rectangle"} <= set(children):
         return GEOMETRY
+    if {"positions", "coordinate_identifier"} <= set(children):
+        return MARKERS
     r, z = children.get("r"), children.get("z")
     if r is None or z is None:
         return None
@@ -612,6 +620,19 @@ def _element_name(element, aos_name: str, index: int) -> str:
         value = node.value
         if isinstance(value, str) and value.strip():
             return value.strip()
+    # e.g. a source of distribution_sources: its process and reactant energies,
+    # such as "D_T_to_4He_n beam_thermal"
+    process = getattr(element, "process", None)
+    if process is not None and getattr(process.metadata, "data_type", None) is \
+            IDSDataType.STRUCT_ARRAY and len(process):
+        words = []
+        for child in ("type", "reactant_energy"):
+            node = getattr(getattr(process[0], child, None), "name", None)
+            if isinstance(node, IDSPrimitive) and isinstance(node.value, str) \
+                    and node.value.strip():
+                words.append(node.value.strip())
+        if words:
+            return " ".join(words)
     return f"{aos_name}[{index}]"
 
 
@@ -886,6 +907,23 @@ def _extract_member(ids, path: SignalPath, plan: _Plan, key: Dict[int, int]):
             raise not_filled()
         return Trace(path, times, values, value_axis, doc, fixed_time)
 
+    if len(kept) == 1 and meta.name == "values" and full[kept[0]] == ALL:
+        # values of a GGD on a structured grid (e.g. R by Z) are maps
+        first = next(((leaf, value) for leaf, value, _ in map(slice_data, slices)
+                      if leaf is not None), None)
+        grid = _structured_grid(first[0]) if first is not None else None
+        if grid is not None and _on_grid(first[1], grid)[2].size:
+
+            def load_grid(k: int):
+                leaf, values, _ = slice_data(slices[k])
+                found = _structured_grid(leaf) if leaf is not None else None
+                if found is None:
+                    return np.empty(0), np.empty(0), np.empty((0, 0))
+                return _on_grid(values, found)
+
+            return MapSeries(path, times, len(slices), load_grid, grid[0][1], grid[1][1],
+                             value_axis, doc, fixed_time)
+
     if len(kept) == 1:
         xs, ys, x_axis = [], [], None
         for i in slices:
@@ -988,12 +1026,92 @@ def _from_leaf(path, leaf, selectors, value_axis, doc, fixed_time,
         if meta.coordinates[dim].is_time_coordinate:  # a curve along time
             time = _time_of(leaf, dim, value.shape[dim])[full[dim].as_slice()]
             return Trace(path, time, selected, value_axis, doc, fixed_time)
+        grid = _structured_grid(leaf) if meta.name == "values" and full[dim] == ALL \
+            else None
+        if grid is not None:  # values of a GGD, on a grid of e.g. R by Z
+            x1, x2, z = _on_grid(selected, grid)
+            if z.size:
+                return MapSeries(path, None, 1, lambda i: (x1, x2, z), grid[0][1],
+                                 grid[1][1], value_axis, doc, fixed_time)
         x, x_axis = coordinate(dim)
         return ProfileSeries(path, None, [x], [selected], x_axis, value_axis, doc,
                              fixed_time)
     (x1, a1), (x2, a2) = coordinate(kept[0]), coordinate(kept[1])
     return MapSeries(path, None, 1, lambda i: (x1, x2, selected), a1, a2,
                      value_axis, doc, fixed_time)
+
+
+# ---------------------------------------------------------------------------------
+# Values of a GGD on a structured grid
+# ---------------------------------------------------------------------------------
+
+_GRID_AXES = {"r": Axis("R", "m"), "z": Axis("Z", "m"), "x": Axis("X", "m"),
+              "y": Axis("Y", "m"), "phi": Axis("phi", "rad")}
+
+
+def _structured_grid(values) -> Optional[Tuple[Tuple[np.ndarray, Axis], ...]]:
+    """The two axes of the grid that the ``values`` of a GGD quantity are given on,
+    when that grid is structured: two spaces of one dimension each, e.g. R and Z
+    (identifier ``structured_spaces``). None for other grids."""
+    from imas.util import get_parent
+
+    scalar = get_parent(values)
+    if scalar is None or not hasattr(scalar, "grid_subset_index"):
+        return None
+    ggd = get_parent(get_parent(scalar))  # the array of such quantities, then the GGD
+    grid = getattr(ggd, "grid", None) if ggd is not None else None
+    spaces = getattr(grid, "space", None)
+    if spaces is None or len(spaces) != 2:
+        return None
+    axes = []
+    for number, space in enumerate(spaces):
+        if not len(space.objects_per_dimension):
+            return None
+        nodes = space.objects_per_dimension[0].object
+        points = np.array([_leaf_array(node.geometry).ravel()[0]
+                           if node.geometry.has_value else np.nan for node in nodes])
+        if points.size < 2 or not np.all(np.isfinite(points)):
+            return None
+        axes.append((points, _space_axis(space, number)))
+    return tuple(axes)
+
+
+def _space_axis(space, number: int) -> Axis:
+    """The axis of a space of a grid, from the coordinate its nodes give."""
+    kinds = space.coordinates_type
+    name = ""
+    if kinds.metadata.data_type is IDSDataType.STRUCT_ARRAY:  # Data Dictionary 4
+        if len(kinds) and kinds[0].name.has_value:
+            name = str(kinds[0].name.value).strip()
+        index = int(kinds[0].index.value) if len(kinds) and kinds[0].index.has_value \
+            else None
+    else:  # Data Dictionary 3: the indices of the coordinates
+        values = _leaf_array(kinds).ravel()
+        index = int(values[0]) if values.size and np.isfinite(values[0]) else None
+    if not name and index is not None:
+        try:
+            from imas.ids_identifiers import identifiers
+
+            name = identifiers.coordinate_identifier(index).name
+        except (ValueError, AttributeError):
+            name = ""
+    if name:
+        return _GRID_AXES.get(name.lower(), Axis(name, ""))
+    return Axis(f"space {number + 1}", "")
+
+
+def _on_grid(values: np.ndarray, grid) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``values`` as a map on a structured grid: on its nodes, the first space
+    running fastest (as the Data Dictionary orders a structured grid), or on its
+    cells, at their centers."""
+    (x1, _), (x2, _) = grid
+    values = np.asarray(values, dtype=float).ravel()
+    if values.size == len(x1) * len(x2):
+        return x1, x2, values.reshape((len(x1), len(x2)), order="F")
+    if values.size == (len(x1) - 1) * (len(x2) - 1):
+        centers1, centers2 = (x1[1:] + x1[:-1]) / 2, (x2[1:] + x2[:-1]) / 2
+        return centers1, centers2, values.reshape((len(centers1), len(centers2)), order="F")
+    return np.empty(0), np.empty(0), np.empty((0, 0))
 
 
 # ---------------------------------------------------------------------------------
@@ -1007,6 +1125,8 @@ def read_shape(node, shape: str) -> Optional[np.ndarray]:
     """(R, Z) rows of a shape structure, or None when it is not filled."""
     if shape == GEOMETRY:
         return geometry_outline(node)
+    if shape == MARKERS:
+        return marker_positions(node)
     r, z = _leaf_array(node.r), _leaf_array(node.z)
     if shape == POINT:
         if not (np.isfinite(r) and np.isfinite(z)):
@@ -1016,6 +1136,24 @@ def read_shape(node, shape: str) -> Optional[np.ndarray]:
         return None
     points = np.column_stack([r, z])
     return _closed(points) if _is_closed(node, points) else points
+
+
+def marker_positions(markers) -> Optional[np.ndarray]:
+    """(R, Z) of every marker, from the columns of ``positions`` that the
+    ``coordinate_identifier`` of the markers names r and z (in any order)."""
+    positions = _leaf_array(markers.positions)
+    if positions.ndim != 2 or positions.size == 0:
+        return None
+    columns: Dict[str, int] = {}
+    for column, identifier in enumerate(markers.coordinate_identifier):
+        name = str(identifier.name.value).strip().lower() if identifier.name.has_value else ""
+        index = int(identifier.index.value) if identifier.index.has_value else None
+        for key, wanted in (("r", _R_INDEX), ("z", _Z_INDEX)):
+            if name == key or (not name and index == wanted):
+                columns.setdefault(key, column)
+    if len(columns) < 2 or max(columns.values()) >= positions.shape[1]:
+        return None
+    return np.column_stack([positions[:, columns["r"]], positions[:, columns["z"]]])
 
 
 def _is_closed(outline, points: np.ndarray) -> bool:

@@ -10,7 +10,8 @@ viewer for [IMAS](https://imas.iter.org) IDS data. It reads data with
 - a time cursor: profiles and maps follow the time picked on a trace or on the time bar,
 - several data sources overlaid in every panel, like shots in jScope,
 - wildcards over arrays of structures: every coil, channel or ion species at once,
-- coils, walls and plasma boundaries drawn in the poloidal (R, Z) plane,
+- coils, walls, plasma boundaries and particle births drawn in the poloidal (R, Z)
+  plane,
 - an IDS browser that lists the quantities filled in a source,
 - configurations saved as YAML, which can be applied to other data,
 - the last session back when idscope starts again: panels, sources and time,
@@ -174,6 +175,8 @@ pf_active/coil[:]/element[:]/geometry                the coils in (R, Z)
 wall/description_2d[0]/limiter/unit[:]/outline       the wall in (R, Z)
 equilibrium/time_slice/boundary/outline              the plasma boundary in (R, Z), per time slice
 equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a point per time slice
+distribution_sources/source[:]/markers               where the particles of every source are born
+distribution_sources/source[:]/ggd/particles[0]/values   a map per source, on a grid of R by Z
 ```
 
 - The time-dependent array of structures (`profiles_1d`, `time_slice`, ...) is left
@@ -183,7 +186,8 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
 - Other arrays of structures need an index: `ion[0]`, `flux_loop(1)`, `coil[-1]`
   (the last one), or a **wildcard**: `:` for all elements, `a:b` or `a:b:step`
   for some of them (Fortran ranges `(a:b)` include both ends). A path with wildcards
-  has a member per element, named after its `name` (or `label`, `identifier`): a
+  has a member per element, named after its `name` (or `label`, `identifier`, or
+  the process of a distribution source, e.g. `D_D_to_3He_n beam_thermal`): a
   curve per coil in time traces, a bar per coil at the selected time in a profile
   panel. Elements with the same name are told apart as `nbi`, `nbi#2`, and a member
   has the same color in all the panels of the window. Wildcards can be nested
@@ -209,8 +213,14 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
   time-dependent arrays of structures (`profiles_1d`, `time_slice`, ...).
 - A path to a structure that describes a shape draws it in the poloidal plane, over
   maps: the 2D geometry of coils and passive loops (outline, rectangle,
-  parallelogram, arcs of circle, annulus or thick line), `r`/`z` outlines and
-  `r`/`z` points. The IDS browser lists them as *shape*.
+  parallelogram, arcs of circle, annulus or thick line), `r`/`z` outlines,
+  `r`/`z` points, and the markers of a particle distribution, as dots (the columns
+  of their `positions` that their `coordinate_identifier` says are R and Z). The IDS
+  browser lists them as *shape*.
+- The `values` of a GGD quantity on a structured grid (grid identifier
+  `structured_spaces`: two spaces of one dimension, e.g. R and Z) are a map, on the
+  nodes of the grid (the first space running fastest) or on its cells. Values on
+  other grids are drawn along their index.
 - The x axis and the time come from the Data Dictionary coordinates, for homogeneous
   and heterogeneous time alike. Another x can be chosen per signal (`x:` in the
   configuration, *X path* in the setup dialog), e.g. `core_profiles/profiles_1d/grid/psi`.
@@ -236,7 +246,7 @@ names; this is noted in the log. `--dd-version` selects the version to use.
 |---|---|---|
 | `trace` | y(t) | scalars in a time array of structures, arrays along a time coordinate |
 | `profile` | y(x), at the current time for profiles in a time array of structures, or a bar per element | 1D quantities; values of paths with wildcards |
-| `map` | z(x1, x2), at the current time for maps in a time array of structures, with shapes over it | 2D quantities, e.g. `profiles_2d[0]/psi`; shapes in (R, Z) |
+| `map` | z(x1, x2), at the current time for maps in a time array of structures, with shapes over it | 2D quantities, e.g. `profiles_2d[0]/psi`; values of a GGD on a structured grid; shapes in (R, Z) |
 | `spacetime` | a profile as an image z(t, x) | 1D quantities in a time array of structures |
 
 `auto` (the default) picks the kind from the first signal; a value per element of a

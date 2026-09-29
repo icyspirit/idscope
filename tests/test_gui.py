@@ -134,7 +134,7 @@ def test_browser(window):
     assert browser.source_combo.count() == 2
     assert browser.ids_combo.findText("core_profiles") >= 0
     browser.ids_combo.setCurrentIndex(browser.ids_combo.findText("summary"))
-    assert browser.tree.topLevelItemCount() == 1  # global_quantities
+    assert browser.tree.topLevelItemCount() == 2  # global_quantities, fusion
     browser.ids_combo.setCurrentIndex(browser.ids_combo.findText("core_profiles"))
     browser.filter.setText("temperature")
     root = browser.tree.invisibleRootItem()

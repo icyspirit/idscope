@@ -11,7 +11,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from idscope.config import PanelConfig, SignalConfig
 from idscope.data import MAP, PROFILE, SHAPE, TRACE, Channels, MapSeries, ProfileSeries
 from idscope.data import Shapes, SignalData, parse_alternatives
-from idscope.data.extract import GEOMETRY, POINT
+from idscope.data.extract import GEOMETRY, MARKERS, POINT
 from idscope.data.sources import DataSource
 from idscope.errors import IdscopeError
 from idscope.gui import style
@@ -607,6 +607,9 @@ class Panel(QtWidgets.QFrame):
             item = pg.PlotDataItem(pen=None, symbol=symbol, symbolSize=10,
                                    symbolPen=pg.mkPen(pen.color(), width=2),
                                    symbolBrush=None)
+        elif data.shape == MARKERS:  # often thousands: small dots, no outline
+            item = pg.PlotDataItem(pen=None, symbol="o", symbolSize=3, symbolPen=None,
+                                   symbolBrush=pg.mkBrush(pen.color()))
         elif data.shape == GEOMETRY:
             fill = QtGui.QColor(pen.color())
             fill.setAlpha(60)
@@ -848,7 +851,7 @@ class Panel(QtWidgets.QFrame):
                 shown.append((curve, t_slice))
             elif isinstance(curve.data, Shapes):
                 outlines, t_slice = curve.data.at(t)
-                x, y = _joined(outlines, curve.data.shape != POINT)
+                x, y = _joined(outlines, curve.data.shape not in (POINT, MARKERS))
                 curve.item.setData(x, y)
                 if curve.data.is_time_dependent:
                     shown.append((curve, t_slice))

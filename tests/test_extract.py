@@ -9,7 +9,7 @@ from idscope.data import (
     Trace,
     parse_signal_path,
 )
-from idscope.data.extract import geometry_outline, normalize, plan_path
+from idscope.data.extract import geometry_outline, marker_positions, normalize, plan_path
 from idscope.data.sources import DataSource, parse_source
 from idscope.errors import NoDataError, PathError
 
@@ -490,3 +490,106 @@ def test_elements_with_the_same_name(two_beams):
     data = two_beams.signal(parse_signal_path(energy), psi_n)
     assert [len(member.xs[0]) for member in data.members] == [11, 21]
     np.testing.assert_allclose(data.members[1].xs[0], np.linspace(0.0, 1.0, 21) ** 2)
+
+
+def test_markers(source_a):
+    """Where the ions of a neutral beam are born, as the markers of a distribution
+    source."""
+    births = get(source_a, "distribution_sources/source[:]/markers")
+    assert isinstance(births, Shapes) and births.shape == "markers"
+    assert births.names == ["NBI"]  # the sources of neutrons have no markers
+    np.testing.assert_allclose(births.time, [2.0, 4.0, 6.0, 8.0, 10.0])
+    (before,), _ = births.at(2.0)  # the beam starts at 3 s
+    assert before.shape == (0, 2)
+    (points,), t = births.at(6.0)
+    assert t == 6.0 and points.shape == (400, 2)
+    assert np.all((points[:, 0] >= 1.3) & (points[:, 0] <= 2.35))  # R, not phi
+    assert abs(np.mean(points[:, 1]) - 0.05) < 0.03  # Z
+
+
+def test_marker_columns():
+    import imas
+
+    ids = imas.IDSFactory().distribution_sources()
+    ids.source.resize(1)
+    ids.source[0].markers.resize(1)
+    markers = ids.source[0].markers[0]
+    markers.positions = np.array([[0.1, 1.5, 2.0], [0.2, -0.5, 2.5]])
+    assert marker_positions(markers) is None  # nothing says which column is which
+    markers.coordinate_identifier.resize(3)
+    for identifier, index in zip(markers.coordinate_identifier, (5, 3, 4)):
+        identifier.index = index  # phi, z and r
+    # by the indices of the Data Dictionary's coordinate identifiers
+    np.testing.assert_allclose(marker_positions(markers), [[2.0, 1.5], [2.5, -0.5]])
+    for identifier, name in zip(markers.coordinate_identifier, ("phi", "z", "r")):
+        identifier.name = name
+        identifier.index = 0  # the names win
+    np.testing.assert_allclose(marker_positions(markers), [[2.0, 1.5], [2.5, -0.5]])
+    markers.coordinate_identifier[2].name = "x"
+    assert marker_positions(markers) is None  # no R
+
+
+def test_maps_on_a_structured_grid(source_a):
+    """Where the neutrons are born, as the values of a GGD on a grid of R by Z."""
+    from idscope.demo import NEUTRON_GRID
+
+    births = get(source_a, "distribution_sources/source[:]/ggd/particles[0]/values")
+    assert isinstance(births, Channels)
+    # named after the process of the source
+    assert births.names == ["D_D_to_3He_n thermal_thermal", "D_D_to_3He_n beam_thermal"]
+    thermal = births.members[0]
+    assert isinstance(thermal, MapSeries)
+    assert (thermal.x_axis.title(), thermal.x2_axis.title()) == ("R [m]", "Z [m]")
+    np.testing.assert_allclose(thermal.time, [2.0, 4.0, 6.0, 8.0, 10.0])
+    r, z, rates, t = thermal.at(6.0)
+    assert t == 6.0
+    np.testing.assert_allclose(r, NEUTRON_GRID[0])
+    np.testing.assert_allclose(z, NEUTRON_GRID[1])
+    assert rates.shape == (25, 49)
+    peak = np.unravel_index(np.argmax(rates), rates.shape)
+    assert (r[peak[0]], z[peak[1]]) == pytest.approx((1.8, 0.0))  # at the center
+    # at one time: a single map
+    one = get(source_a, "distribution_sources/source[1]/ggd[2]/particles[0]/values")
+    assert isinstance(one, MapSeries)
+    assert one.time is None and one.fixed_time == pytest.approx(6.0)
+    np.testing.assert_allclose(one.at(None)[2], rates)
+
+
+@pytest.fixture(scope="module")
+def births_on_cells(tmp_path_factory):
+    """Neutron birth rates on the cells of their grid, and rates that fit neither
+    its nodes nor its cells, in Data Dictionary 3.39.0 (where a space of a grid
+    gives the indices of its coordinates)."""
+    import imas
+
+    from idscope.demo import distribution_sources
+
+    path = tmp_path_factory.mktemp("cells") / "births.nc"
+    with imas.DBEntry(str(path), "w", dd_version="3.39.0") as entry:
+        ids = distribution_sources(entry.factory, n_markers=10)
+        for cells, odd in zip(ids.source[1].ggd, ids.source[2].ggd):
+            cells.particles[0].values = np.arange(24.0 * 48.0)  # R running fastest
+            odd.particles[0].values = np.arange(7.0)
+        entry.put(ids)
+    source = DataSource(parse_source(str(path)))
+    yield source
+    source.close()
+
+
+def test_map_on_the_cells_of_a_structured_grid(births_on_cells):
+    from idscope.demo import NEUTRON_GRID
+
+    births = get(births_on_cells, "distribution_sources/source[1]/ggd/particles[0]/values")
+    assert isinstance(births, MapSeries)
+    assert (births.x_axis.title(), births.x2_axis.title()) == ("R [m]", "Z [m]")
+    r, z, values, _ = births.at(6.0)
+    np.testing.assert_allclose(r, (NEUTRON_GRID[0][1:] + NEUTRON_GRID[0][:-1]) / 2)
+    np.testing.assert_allclose(z, (NEUTRON_GRID[1][1:] + NEUTRON_GRID[1][:-1]) / 2)
+    assert values.shape == (24, 48)
+    assert (values[1, 0], values[0, 1]) == (1.0, 24.0)
+    # values that fit neither are drawn along their index, as on other grids
+    for text in ("distribution_sources/source[2]/ggd/particles[0]/values",
+                 "distribution_sources/source[2]/ggd[2]/particles[0]/values"):
+        odd = get(births_on_cells, text)
+        assert isinstance(odd, ProfileSeries)
+        np.testing.assert_allclose(odd.at(6.0)[1], np.arange(7.0))
