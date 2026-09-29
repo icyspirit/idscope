@@ -1,5 +1,7 @@
 # idscope
 
+[![tests](https://github.com/icyspirit/idscope/actions/workflows/tests.yml/badge.svg)](https://github.com/icyspirit/idscope/actions/workflows/tests.yml)
+
 A lightweight [jScope](https://www.mdsplus.org/index.php/Documentation:Tutorial:GUIs:jScope)-like
 viewer for [IMAS](https://imas.iter.org) IDS data. It reads data with
 [imas-python](https://github.com/iterorganization/IMAS-Python) and draws it with
@@ -357,7 +359,8 @@ QT_QPA_PLATFORM=offscreen pytest
 ```
 
 The tests create synthetic data (netCDF and HDF5) and use the ITER 134173/106 training
-data bundled with imas-python.
+data bundled with imas-python. GitHub Actions runs them, and pyflakes, on every pull
+request, with PyQt5 (Python 3.10) and with PySide6 (Python 3.12).
 
 Code layout: `idscope.data` (sources, signal paths, extraction; no Qt),
 `idscope.config` (YAML configuration), `idscope.templates` (YAML templates),
