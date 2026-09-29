@@ -19,9 +19,13 @@ def test_list_quantities(data_dir, capsys):
 
 def test_list_templates(capsys):
     assert main(["--list-templates"]) == 0
-    assert capsys.readouterr().out.split() == [
-        "core_profiles", "core_sources", "equilibrium", "pf_active"
+    lines = capsys.readouterr().out.splitlines()
+    assert [line.split()[0] for line in lines] == [
+        "core_profiles", "core_sources", "equilibrium", "free_boundary", "nbi", "pf_active"
     ]
+    # and the codes whose results they show
+    assert "free_boundary    also: freegs, sonamu" in lines
+    assert "nbi              also: nubdec" in lines
 
 
 def test_template_export(tmp_path, data_dir, capsys):

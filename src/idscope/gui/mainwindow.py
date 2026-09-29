@@ -34,7 +34,7 @@ from idscope.gui.panel import COLORBAR_SPACE, Panel
 from idscope.gui.setup_dialog import SetupDialog
 from idscope.gui.timebar import TimeBar
 from idscope.session import SETTINGS_FILE, config_dir, save_session
-from idscope.templates import load_template, template_names
+from idscope.templates import aliases_of, load_template, template_names
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +287,9 @@ class MainWindow(QtWidgets.QMainWindow):
             if slot == self.new_config:
                 templates_menu = file_menu.addMenu("New from &template")
                 for name in template_names():
-                    templates_menu.addAction(name).triggered.connect(
+                    aliases = aliases_of(name)
+                    text = f"{name} ({', '.join(aliases)})" if aliases else name
+                    templates_menu.addAction(text).triggered.connect(
                         lambda checked=False, n=name: self.new_from_template(n)
                     )
             elif slot == self.open_config:

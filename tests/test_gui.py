@@ -568,6 +568,19 @@ def test_undo_and_redo(window, data_dir):
     assert [c.width for c in window.config.columns] == [1.0, 1.0, 1.0]
 
 
+def test_templates_menu(window):
+    def submenu(menu, text):
+        return next(a.menu() for a in menu.actions() if a.text() == text)
+
+    templates = submenu(submenu(window.menuBar(), "&File"), "New from &template")
+    actions = {action.text(): action for action in templates.actions()}
+    # also by the names of the codes whose results they show
+    assert "nbi (nubdec)" in actions and "free_boundary (freegs, sonamu)" in actions
+    actions["nbi (nubdec)"].trigger()
+    assert window.config.title == "nbi"
+    assert window.undo_action.text() == "&Undo template nbi"
+
+
 def test_undo_open_new_and_template(window, config_path, tmp_path):
     window.change_layout(window.panels[0], "remove")
     saved = tmp_path / "saved.yaml"

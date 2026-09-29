@@ -1,0 +1,99 @@
+# idscope template: neutral beam injection, as a beam code writes it (NuBDeC in
+# tbd-fusion, for one: "-T nubdec" is this template).
+#
+#   idscope -T nbi SOURCE [SOURCE ...]
+#
+# What the sources give the plasma (core_sources), the fast ions (core_profiles),
+# where the ions of the beam are born and where the neutrons are (distribution_sources),
+# and the neutron rates (summary), the D-D neutrons of the beam on the plasma apart
+# from those of the plasma alone. The births are drawn over the plasma boundary and
+# the wall when a source holds them: give the entry the beam code was run on as a
+# second source. The neutron births of every reaction are chosen with "Show".
+title: nbi
+columns:
+  # Profiles at the selected time
+  - width: 1.2
+    panels:
+      - title: Heating
+        signals:
+          - path: core_sources/source[:]/profiles_1d/electrons/energy
+            x: &x core_sources/source[:]/profiles_1d/grid/rho_tor_norm | norm(core_sources/source[:]/profiles_1d/grid/psi) | core_sources/source[:]/profiles_1d/grid/rho_pol_norm
+            label: electrons
+            scale: 1.0e-6
+          - path: core_sources/source[:]/profiles_1d/total_ion_energy
+            x: *x
+            label: ions
+            scale: 1.0e-6
+        y_label: Q [MW m^-3]
+      - title: Driven current density
+        signals:
+          - path: core_sources/source[:]/profiles_1d/j_parallel
+            x: *x
+            scale: 1.0e-6
+        y_label: j_par [MA m^-2]
+      - title: Torque density
+        signals:
+          - path: core_sources/source[:]/profiles_1d/momentum_phi | core_sources/source[:]/profiles_1d/momentum_tor
+            x: *x
+        y_label: torque [N m^-2]
+      - title: Fast ion density
+        signals:
+          - path: core_profiles/profiles_1d/ion[:]/density_fast
+            x: &xp core_profiles/profiles_1d/grid/rho_tor_norm | norm(core_profiles/profiles_1d/grid/psi) | core_profiles/profiles_1d/grid/rho_pol_norm
+            scale: 1.0e-18
+        y_label: n_fast [1e18 m^-3]
+      - title: Fast ion pressures
+        signals:
+          - path: core_profiles/profiles_1d/ion[:]/pressure_fast_parallel
+            x: *xp
+            label: parallel
+            scale: 1.0e-3
+          - path: core_profiles/profiles_1d/ion[:]/pressure_fast_perpendicular
+            x: *xp
+            label: perpendicular
+            scale: 1.0e-3
+        y_label: p_fast [kPa]
+  # In the poloidal plane, and the neutron rates over time
+  - panels:
+      - title: Births of the beam ions
+        kind: map
+        equal_aspect: true
+        contours: 10
+        x_label: R [m]
+        y_label: Z [m]
+        height: 1.4
+        signals:
+          - path: equilibrium/time_slice/profiles_2d[0]/psi
+          - path: distribution_sources/source[:]/markers
+            label: births
+          - path: equilibrium/time_slice/boundary/outline
+            label: boundary
+          - path: wall/description_2d[0]/limiter/unit[:]/outline
+            label: wall
+            color: "#7f7f7f"
+      - title: Births of the neutrons
+        kind: map
+        equal_aspect: true
+        x_label: R [m]
+        y_label: Z [m]
+        height: 1.4
+        signals:
+          - path: distribution_sources/source[:]/ggd/particles[0]/values
+            label: births
+          - path: equilibrium/time_slice/boundary/outline
+            label: boundary
+          - path: wall/description_2d[0]/limiter/unit[:]/outline
+            label: wall
+            color: "#7f7f7f"
+      - title: Neutron rates
+        height: 0.6
+        signals:
+          - path: summary/fusion/neutron_rates/total/value
+            label: total
+          - path: summary/fusion/neutron_rates/dd/beam_thermal/value
+            label: D-D beam-thermal
+          - path: summary/fusion/neutron_rates/dd/thermal/value
+            label: D-D thermal
+          - path: summary/fusion/neutron_rates/dt/total/value
+            label: D-T
+        y_label: rate [s^-1]

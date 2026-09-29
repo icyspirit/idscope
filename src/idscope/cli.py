@@ -11,7 +11,7 @@ from idscope import __version__
 from idscope.config import ScopeConfig, default_config, load_config
 from idscope.errors import ConfigError, IdscopeError
 from idscope.session import config_dir, load_session
-from idscope.templates import load_template, template_names
+from idscope.templates import aliases_of, load_template, template_names
 
 EPILOG = """\
 examples:
@@ -58,7 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="start with an empty panel instead of the panels of the last session",
     )
     parser.add_argument(
-        "--list-templates", action="store_true", help="print the template names and exit"
+        "--list-templates", action="store_true",
+        help="print the template names (and the codes some go by) and exit",
     )
     parser.add_argument("-t", "--time", type=float, help="initial time [s]")
     parser.add_argument(
@@ -183,7 +184,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         if args.list_templates:
             for name in template_names():
-                print(name)
+                aliases = aliases_of(name)
+                print(f"{name:16s} also: {', '.join(aliases)}" if aliases else name)
             return 0
         if args.list:
             return list_command(args)
