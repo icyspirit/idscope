@@ -1284,7 +1284,9 @@ class Panel(QtWidgets.QFrame):
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
         mime = event.mimeData()
-        if mime.hasFormat(MIME_SIGNAL) or mime.hasText():
+        if mime.hasUrls() and all(url.isLocalFile() for url in mime.urls()):
+            event.ignore()  # files: sources for the window, not signal paths
+        elif mime.hasFormat(MIME_SIGNAL) or mime.hasText():
             event.acceptProposedAction()
 
     def dropEvent(self, event: QtGui.QDropEvent) -> None:

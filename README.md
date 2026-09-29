@@ -113,7 +113,10 @@ A template saved with File → Save as becomes a configuration that can be edite
 
 - **Sources** are IDS netCDF files (`shot.nc`), IMAS URIs
   (`imas:hdf5?path=/data/entry`, `imas:mdsplus?...`) or HDF5 entry directories.
-  Relative paths are relative to the configuration file.
+  Relative paths are relative to the configuration file. The ▾ button next to the
+  field (or ↓ in it) lists the recent ones. Files and entry directories dropped on
+  the window are added to the sources; a configuration file (`.yaml`) dropped on it
+  is opened.
 - **Pan** (the default): drag to move; right-drag scales the axes, the wheel zooms.
   **Zoom**: drag a rectangle. **Point**: click or drag in a time trace to set the
   time; the status bar shows the values of the current panel at that time.
@@ -161,6 +164,7 @@ keys they use.
 |---|---|
 | Ctrl+← Ctrl+→, Ctrl+Home Ctrl+End | previous, next, first, last time slice |
 | Ctrl+L, Ctrl+F, Ctrl+T | go to the sources, the filter of the IDS browser, the time |
+| ↓ in the Sources field | the recent sources |
 | Esc | back to the panels |
 | Ctrl+Shift+↓, Ctrl+Shift+→ | add a panel below the current one, add a column |
 | Ctrl+Z, Ctrl+Shift+Z (Ctrl+Y) | undo, redo |
