@@ -22,6 +22,8 @@ MEMBER_PALETTE = PALETTE + [
 SYMBOLS = ["x", "+", "o", "t"]
 """Symbols of points (e.g. the magnetic axis), one per source."""
 TIME_LINE_COLOR = "#808080"
+CURSOR_COLOR = "#505050"
+"""The crosshair of the Point mode."""
 ERROR_COLOR = "#c62828"
 NOTE_COLOR = "#808080"
 """Of what is merely not there, e.g. an IDS that a source does not have."""

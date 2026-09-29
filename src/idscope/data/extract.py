@@ -13,6 +13,8 @@ kind                      examples
 ``map``    (z vs x1, x2)  ``equilibrium/time_slice/profiles_2d[0]/psi``
 ``shape``  (in R, Z)      ``pf_active/coil[:]/element[:]/geometry``,
                           ``wall/description_2d[0]/limiter/unit[:]/outline``,
+                          ``wall/description_2d[0]/vessel/unit[:]/annular``,
+                          ``tf/coil[:]/conductor[:]/elements``,
                           ``equilibrium/time_slice/boundary/x_point[:]``
 ========================  =========================================================
 
@@ -48,6 +50,9 @@ SHAPE = "shape"
 GEOMETRY, OUTLINE, POINT, MARKERS = "geometry", "outline", "point", "markers"
 """Kinds of shapes: closed cross-sections, curves, points and the markers of a
 particle distribution (e.g. where the ions of a neutral beam are born)."""
+ANNULAR, CONDUCTOR = "annular", "conductor"
+"""Also kinds of shapes: a layer of a vessel between two contours, and a conductor
+made of line segments and arcs of circle (e.g. a toroidal field coil)."""
 
 _R_INDEX, _Z_INDEX = 4, 3
 """Indices of R and Z in the Data Dictionary's coordinate identifiers."""
@@ -454,8 +459,9 @@ def is_time_aos(meta) -> bool:
 
 def shape_kind(meta) -> Optional[str]:
     """The kind of shape a structure (or the elements of an array of structures)
-    describes: a Data Dictionary 2D geometry, an (r, z) curve, an (r, z) point or
-    the markers of a particle distribution."""
+    describes: a Data Dictionary 2D geometry, an (r, z) curve, an (r, z) point,
+    the markers of a particle distribution, a layer of a vessel or the elements of
+    a conductor."""
     if meta.data_type not in (IDSDataType.STRUCTURE, IDSDataType.STRUCT_ARRAY):
         return None
     children = {child.name: child for child in meta}
@@ -463,6 +469,10 @@ def shape_kind(meta) -> Optional[str]:
         return GEOMETRY
     if {"positions", "coordinate_identifier"} <= set(children):
         return MARKERS
+    if {"outline_inner", "outline_outer"} <= set(children):
+        return ANNULAR
+    if {"types", "start_points", "end_points"} <= set(children):
+        return CONDUCTOR
     r, z = children.get("r"), children.get("z")
     if r is None or z is None:
         return None
@@ -758,10 +768,16 @@ def _members(ids, plan: _Plan) -> List[Tuple[Dict[int, int], str]]:
     walk(ids, 0, (), ())
     members = []
     seen: Dict[str, int] = {}
+    steps = [plan.steps[pos].name for pos in plan.channels]
     for key in sorted(found):
         labels = found[key]
-        # Levels with a single element (e.g. coils of one element) add nothing
-        shown = [name for name, count in labels if count > 1] or [labels[-1][0]]
+        # Levels with a single element (e.g. coils of one element) add nothing; when
+        # all have one, the last level with a name tells the member (the coil "TF"
+        # rather than its one conductor, "conductor[0]")
+        named = [name for (name, _), step in zip(labels, steps)
+                 if not name.startswith(f"{step}[")]
+        shown = [name for name, count in labels if count > 1] or \
+            (named[-1:] or [labels[-1][0]])
         name = "/".join(shown)
         # Elements can share a name, e.g. two core_sources both "nbi": nbi, nbi#2
         seen[name] = seen.get(name, 0) + 1
@@ -1480,6 +1496,10 @@ def read_shape(node, shape: str) -> Optional[np.ndarray]:
         return geometry_outline(node)
     if shape == MARKERS:
         return marker_positions(node)
+    if shape == ANNULAR:
+        return annular_outline(node)
+    if shape == CONDUCTOR:
+        return conductor_line(node)
     r, z = _leaf_array(node.r), _leaf_array(node.z)
     if shape == POINT:
         if not (np.isfinite(r) and np.isfinite(z)):
@@ -1510,14 +1530,17 @@ def marker_positions(markers) -> Optional[np.ndarray]:
 
 
 def _is_closed(outline, points: np.ndarray) -> bool:
-    """Whether a curve is closed: as its ``closed`` flag says (e.g. limiter units
+    """Whether a curve is closed: as its ``closed`` flag says, or that of the
+    structure around it (e.g. the contours of a vessel layer and the limiter units
     of DD 3), else when its ends are about one segment apart."""
-    try:
-        from imas.util import get_parent
+    flag = getattr(outline, "closed", None)
+    if not (isinstance(flag, IDSPrimitive) and flag.has_value):
+        try:
+            from imas.util import get_parent
 
-        flag = getattr(get_parent(outline), "closed", None)
-    except Exception:  # pragma: no cover - depends on the imas-python version
-        flag = None
+            flag = getattr(get_parent(outline), "closed", None)
+        except Exception:  # pragma: no cover - depends on the imas-python version
+            flag = None
     if isinstance(flag, IDSPrimitive) and flag.has_value:
         return int(flag.value) == 1
     finite = points[np.all(np.isfinite(points), axis=1)]
@@ -1636,6 +1659,197 @@ def geometry_outline(geometry) -> Optional[np.ndarray]:
         normal = np.array([-(p2 - p1)[1], (p2 - p1)[0]]) / length * thickness / 2
         return _closed([p1 + normal, p2 + normal, p2 - normal, p1 - normal])
     return None
+
+
+def _curve(node) -> Optional[Tuple[np.ndarray, bool]]:
+    """The finite (R, Z) points of an (r, z) curve, and whether it is closed; None
+    when it is not filled."""
+    r, z = _leaf_array(node.r).ravel(), _leaf_array(node.z).ravel()
+    if r.size == 0 or r.shape != z.shape:
+        return None
+    points = np.column_stack([r, z])
+    points = points[np.all(np.isfinite(points), axis=1)]
+    if len(points) < 2:
+        return None
+    return points, _is_closed(node, points)
+
+
+def _widened(points: np.ndarray, thickness: np.ndarray, closed: bool):
+    """The two sides of a band around a curve: ``thickness`` is its width across
+    each segment (from point i to i + 1), or one width for all. None when it does
+    not fit the curve."""
+    segments = (np.roll(points, -1, axis=0) - points) if closed else np.diff(points, axis=0)
+    thickness = thickness[np.isfinite(thickness)]
+    if thickness.size == 1:
+        thickness = np.full(len(segments), float(thickness[0]))
+    if thickness.size < len(segments):
+        return None
+    thickness = thickness[: len(segments)]
+    lengths = np.hypot(*segments.T)
+    lengths[lengths == 0] = 1.0
+    normals = np.column_stack([-segments[:, 1], segments[:, 0]]) / lengths[:, None]
+    # At a point, between the segments on either side of it (the ends of an open
+    # curve have one), mitred at corners
+    if closed:
+        before, after = np.roll(normals, 1, axis=0), normals
+        widths = (np.roll(thickness, 1) + thickness) / 2.0
+    else:
+        before, after = np.vstack([normals[:1], normals]), np.vstack([normals, normals[-1:]])
+        widths = (np.concatenate([thickness[:1], thickness])
+                  + np.concatenate([thickness, thickness[-1:]])) / 2.0
+    total = before + after
+    norms = np.hypot(*total.T)
+    norms[norms == 0] = 1.0
+    mitre = np.minimum(2.0 / norms, 4.0)  # 1 / cos of half the turn at the point
+    offset = total / norms[:, None] * (widths / 2.0 * mitre)[:, None]
+    return points + offset, points - offset
+
+
+def annular_outline(annular) -> Optional[np.ndarray]:
+    """The contours of a layer of a vessel (``annular``): its inner and outer
+    outlines, else its centreline widened by its thickness. Closed contours are
+    separated by a row of NaN, so that the ring between them can be filled; open
+    ones make the band between them, as one closed outline. None when it is not
+    filled."""
+    inner, outer = _curve(annular.outline_inner), _curve(annular.outline_outer)
+    if inner is not None and outer is not None:
+        (inner, closed), (outer, _) = inner, outer
+    else:
+        centre = _curve(annular.centreline)
+        if centre is None:
+            return None
+        points, closed = centre
+        sides = _widened(points, _leaf_array(annular.thickness).ravel(), closed)
+        if sides is None:
+            return None
+        inner, outer = sides
+    if closed:
+        return np.vstack([_closed(inner), np.full((1, 2), np.nan), _closed(outer)])
+    # The band: along one side and back along the other
+    if np.hypot(*(inner[-1] - outer[-1])) < np.hypot(*(inner[-1] - outer[0])):
+        outer = outer[::-1]
+    return _closed(np.vstack([inner, outer]))
+
+
+_TURN_POINTS = 64
+"""Points on a full circle; arcs have as many for the angle they turn by."""
+
+
+def conductor_line(elements) -> Optional[np.ndarray]:
+    """(R, Z) along the elements of a conductor, e.g. of a toroidal field coil:
+    line segments, arcs of circle through an intermediate point, and full circles
+    about a centre. The elements are in three dimensions (r, phi, z); in the
+    poloidal plane they are drawn at their distance from the axis and their height.
+    Rows of NaN separate elements that do not meet. None when it is not filled."""
+    types = _leaf_array(elements.types).ravel()
+    count = types.size
+    if count == 0:
+        return None
+
+    def points(node) -> np.ndarray:
+        """(x, y, z) of the point of every element; NaN where it is not given."""
+        r, z = _leaf_array(node.r).ravel(), _leaf_array(node.z).ravel()
+        if r.size != count or z.size != count:
+            return np.full((count, 3), np.nan)
+        phi = _leaf_array(node.phi).ravel() if hasattr(node, "phi") else np.empty(0)
+        phi = np.where(np.isfinite(phi), phi, 0.0) if phi.size == count \
+            else np.zeros(count)
+        return np.column_stack([r * np.cos(phi), r * np.sin(phi), z])
+
+    start, middle, end, centre = (
+        points(getattr(elements, name))
+        for name in ("start_points", "intermediate_points", "end_points", "centres")
+    )
+    parts: List[np.ndarray] = []
+    last = None
+    for i, kind in enumerate(types):
+        if kind == 1:
+            drawn = _segment(start[i], end[i])
+        elif kind == 2:
+            drawn = _arc_through(start[i], middle[i], end[i], centre[i])
+        elif kind == 3:
+            drawn = _full_circle(centre[i], start[i], middle[i])
+        else:
+            drawn = None
+        if drawn is None:
+            continue
+        if last is not None and not np.allclose(drawn[0], last, rtol=0.0, atol=1e-6):
+            parts.append(np.full((1, 3), np.nan))
+        parts.append(drawn)
+        last = drawn[-1]
+    if not parts:
+        return None
+    xyz = np.vstack(parts)
+    return np.column_stack([np.hypot(xyz[:, 0], xyz[:, 1]), xyz[:, 2]])
+
+
+def _finite(*points) -> bool:
+    return all(bool(np.all(np.isfinite(point))) for point in points)
+
+
+def _segment(a: np.ndarray, b: np.ndarray) -> Optional[np.ndarray]:
+    """Points along a line segment: its ends, and points between them when it
+    crosses toroidal angles (it then curves in R)."""
+    if not _finite(a, b):
+        return None
+    across = abs(a[0] * b[1] - a[1] * b[0]) > 1e-9 * (1.0 + a[:2] @ a[:2] + b[:2] @ b[:2])
+    t = np.linspace(0.0, 1.0, 17 if across else 2)[:, None]
+    return a + t * (b - a)
+
+
+def _on_circle(centre, u, v, radius: float, sweep: float) -> np.ndarray:
+    n = max(2, int(np.ceil(abs(sweep) / (2.0 * np.pi) * _TURN_POINTS))) + 1
+    angles = np.linspace(0.0, sweep, n)[:, None]
+    return centre + radius * (np.cos(angles) * u + np.sin(angles) * v)
+
+
+def _arc_through(a, middle, b, centre) -> Optional[np.ndarray]:
+    """Points along the arc of circle from ``a`` through ``middle`` to ``b``; without
+    the intermediate point, about the ``centre`` the shorter way."""
+    if not _finite(a, b):
+        return None
+    if not _finite(middle):
+        if not _finite(centre):
+            return _segment(a, b)
+        mean = (a - centre) + (b - centre)
+        if np.linalg.norm(mean) == 0:  # half a circle, either way
+            return None
+        middle = centre + np.linalg.norm(a - centre) * mean / np.linalg.norm(mean)
+    ab, ac = middle - a, b - a
+    normal = np.cross(ab, ac)
+    area = normal @ normal
+    if area <= 1e-24 * (ab @ ab) * (ac @ ac) or area == 0:  # on a line
+        return _segment(a, b)
+    # The centre of the circle through the three points
+    circle = a + (np.cross(normal, ab) * (ac @ ac) + np.cross(ac, normal) * (ab @ ab)) \
+        / (2.0 * area)
+    radius = float(np.linalg.norm(a - circle))
+    u = (a - circle) / radius
+    v = np.cross(normal / np.sqrt(area), u)
+    # About the normal of a, middle, b, going from a the positive way passes the
+    # intermediate point before b
+    sweep = np.arctan2((b - circle) @ v, (b - circle) @ u) % (2.0 * np.pi)
+    return _on_circle(circle, u, v, radius, sweep)
+
+
+def _full_circle(centre, a, middle) -> Optional[np.ndarray]:
+    """Points around a full circle about ``centre`` through ``a``, in the plane of
+    ``middle`` (else in the poloidal plane of ``a``)."""
+    if not _finite(centre, a):
+        return None
+    radius = float(np.linalg.norm(a - centre))
+    if radius == 0:
+        return None
+    u = (a - centre) / radius
+    normal = np.cross(a - centre, middle - centre) if _finite(middle) else np.zeros(3)
+    if np.linalg.norm(normal) <= 1e-12 * radius**2:
+        phi = np.arctan2(a[1], a[0])
+        normal = np.array([-np.sin(phi), np.cos(phi), 0.0])  # toroidal direction
+    normal = normal / np.linalg.norm(normal)
+    v = np.cross(normal, u)
+    if np.linalg.norm(v) == 0:
+        return None
+    return _on_circle(centre, u, v / np.linalg.norm(v), radius, 2.0 * np.pi)
 
 
 def apply_x(data: SignalData, x_data: SignalData) -> SignalData:

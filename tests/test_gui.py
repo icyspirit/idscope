@@ -1044,6 +1044,115 @@ def test_drop_files_on_the_window(window, data_dir, tmp_path, config_path):
     assert window.config_path == other and window.config.title == "other"
 
 
+def test_crosshair_in_point_mode(window, make_window, data_dir):
+    def hover(panel, x, y):
+        view = panel.plot.getViewBox()
+        panel._on_move(view.mapViewToScene(QtCore.QPointF(x, y)))
+        return panel._cursor_items
+
+    QtWidgets.QApplication.processEvents()
+    ip, psi = window.panels[0], window.panels[6]
+    assert hover(ip, 5.0, 0.5) is None  # only in the Point mode
+    window.set_mode("point")
+    lines, dots, label = hover(ip, 5.0, 0.5)
+    assert lines[0].isVisible() and lines[0].value() == pytest.approx(5.0)
+    assert label.textItem.toPlainText().splitlines() == [
+        "t = 5 s", "■ Ip (equilibrium) [A] = 1", "■ Ip (equilibrium) [B] = 0.8"
+    ]
+    np.testing.assert_allclose(dots.data["y"], [1.0, 0.8])  # on the curves
+    view = ip.plot.getViewBox()
+    assert view.sceneBoundingRect().contains(label.mapRectToScene(label.boundingRect()))
+    assert label.zValue() > ip.legend.zValue() and label.parentItem() is view
+    # in a corner, it stays within the plot, and follows the view
+    hover(ip, 10.2, 1.1)
+    assert view.sceneBoundingRect().contains(label.mapRectToScene(label.boundingRect()))
+    def beside_cursor():
+        cursor = view.mapViewToScene(QtCore.QPointF(lines[0].value(), lines[1].value()))
+        rect = label.mapRectToScene(label.boundingRect())
+        return min(abs(rect.left() - cursor.x()), abs(rect.right() - cursor.x())) < 20
+
+    hover(ip, 7.0, 0.5)
+    assert beside_cursor()
+    view.setXRange(0.0, 30.0, padding=0)
+    QtWidgets.QApplication.processEvents()
+    assert lines[0].value() == pytest.approx(7.0) and beside_cursor()
+    view.enableAutoRange()
+    QtWidgets.QApplication.processEvents()
+    # beyond the data (0 to 10 s, in a view to 10.25 s), no values
+    hover(ip, 10.2, 0.5)
+    assert label.textItem.toPlainText() == "t = 10.2 s" and len(dots.data) == 0
+    # a profile, whose values follow the time
+    te = window.panels[3]
+    _, _, te_label = hover(te, 0.3, 3.0)
+    before = te_label.textItem.toPlainText()
+    assert before.startswith("rho_tor_norm = 0.3\n")
+    window.set_time(8.0)
+    assert te_label.isVisible() and te_label.textItem.toPlainText() != before
+    te_curve = te.curves[0].item
+    expected = np.interp(0.3, te_curve.xData, te_curve.yData)
+    assert f"= {expected:.5g}" in te_label.textItem.toPlainText().splitlines()[1]
+    # a map: its value there, and coordinates without noise
+    lines, dots, label = hover(psi, 1.8, 1e-17)
+    assert label.textItem.toPlainText().startswith("grid/dim1 = 1.8, grid/dim2 = 0\n")
+    assert "profiles_2d[0]/psi [A] = " in label.textItem.toPlainText()
+    assert window.coordinates_label.text().startswith("x = 1.8, y = 0,")
+    # leaving the plot, or another mode, hides it
+    ip_lines, _, ip_label = ip._cursor_items
+    hover(ip, 5.0, 100.0)  # above the plot
+    assert not ip_label.isVisible() and not ip_lines[0].isVisible()
+    hover(ip, 5.0, 0.5)
+    assert ip_label.isVisible()
+    QtWidgets.QApplication.sendEvent(ip.graphics.viewport(),
+                                     QtCore.QEvent(QtCore.QEvent.Type.Leave))
+    assert not ip_label.isVisible()
+    window.set_mode("pan")
+    assert not label.isVisible() and not lines[0].isVisible()
+
+    # bars: the values of the element under the cursor
+    bars = show(make_window, [f"A={data_dir / 'a.nc'}", f"B={data_dir / 'b.nc'}"],
+                {"kind": "profile", "signals": ["pf_active/coil[:]/current/data"]})
+    bars.set_time(5.0)
+    bars.set_mode("point")
+    QtWidgets.QApplication.processEvents()
+    _, _, label = hover(bars.panels[0], 6.1, 0.0)
+    assert label.textItem.toPlainText().splitlines() == [
+        "PF1", "■ current/data [A] = -4000", "■ current/data [B] = -3200"
+    ]
+
+
+def test_crosshair_on_log_axes(make_window, data_dir):
+    window = show(make_window, [f"A={data_dir / 'a.nc'}"],
+                  {"kind": "profile", "log_x": True, "log_y": True,
+                   "signals": ["core_profiles/profiles_1d/electrons/temperature"]})
+    window.set_time(5.0)
+    window.set_mode("point")
+    QtWidgets.QApplication.processEvents()
+    panel = window.panels[0]
+    item = panel.curves[0].item
+    x, y = item.xData[20], item.yData[20]
+    view = panel.plot.getViewBox()
+    panel._on_move(view.mapViewToScene(QtCore.QPointF(np.log10(x), np.log10(y))))
+    _, dots, label = panel._cursor_items
+    header, row = label.textItem.toPlainText().splitlines()
+    assert header == f"rho_tor_norm = {x:.5g}"  # not its logarithm
+    assert row.endswith(f" = {y:.5g}")
+    np.testing.assert_allclose([dots.data["x"][0], dots.data["y"][0]],
+                               [np.log10(x), np.log10(y)])
+    assert window.coordinates_label.text().startswith(f"x = {x:.5g}, y = ")
+
+
+def test_coordinates_are_rounded_to_the_view():
+    from idscope.gui.panel import _format, _round_to_view
+
+    assert _format(_round_to_view(2.2e-16, 1.0)) == "0"
+    assert _format(_round_to_view(-1e-17, 5.3)) == "0"  # not -0
+    assert _round_to_view(1.23456, 10.0) == pytest.approx(1.23)
+    assert _round_to_view(-0.39994, 1.8) == pytest.approx(-0.4)
+    # on a log axis, the value, to what the decades shown resolve
+    assert _round_to_view(np.log10(0.39994), 1.8, log=True) == pytest.approx(0.4)
+    assert _round_to_view(np.log10(123456.0), 3.0, log=True) == pytest.approx(123500.0)
+
+
 def test_maps_on_unstructured_grids(make_window, data_dir):
     """The values of a GGD quantity on the cells of an unstructured grid: the cells
     filled with their colors, with a color bar."""
@@ -1075,6 +1184,13 @@ def test_maps_on_unstructured_grids(make_window, data_dir):
     assert panel._image.getLevels() == (0.0, 1000.0)
     window.set_time(2.0)
     assert panel._image._values[0] == pytest.approx(values[0] * 0.6 / 0.8)
+    # the crosshair of the Point mode says the value of the cell too
+    window.set_mode("point")
+    panel._on_move(view.mapViewToScene(QtCore.QPointF(2.31, 0.001)))
+    label = panel._cursor_items[2].textItem.toPlainText().splitlines()
+    assert len(label) == 2 and label[1].endswith(f"= {panel._image._values[0]:.5g}")
+    panel._on_move(view.mapViewToScene(QtCore.QPointF(1.8, 0.0)))  # no cell there
+    assert len(panel._cursor_items[2].textItem.toPlainText().splitlines()) == 1
 
 
 def test_compact_exponents_on_color_bars():

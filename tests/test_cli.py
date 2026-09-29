@@ -21,9 +21,11 @@ def test_list_templates(capsys):
     assert main(["--list-templates"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert [line.split()[0] for line in lines] == [
-        "core_profiles", "core_sources", "equilibrium", "free_boundary", "nbi", "pf_active"
+        "core_profiles", "core_sources", "device", "equilibrium", "free_boundary", "nbi",
+        "pf_active",
     ]
     # and the codes whose results they show
+    assert "device           also: autofrd" in lines
     assert "free_boundary    also: freegs, sonamu" in lines
     assert "nbi              also: nubdec" in lines
 
