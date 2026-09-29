@@ -162,6 +162,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._session_timer.setInterval(SESSION_DELAY_MS)
         self._session_timer.timeout.connect(self._write_session)
         self.resize(1300, 850)
+        # White around the plots as well (their headers, the time bar, the docks);
+        # the panels are told apart by their borders
+        palette = self.palette()
+        palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor("white"))
+        self.setPalette(palette)
 
         self._build_toolbar()
         self.timebar = TimeBar()
