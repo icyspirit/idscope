@@ -10,11 +10,14 @@ viewer for [IMAS](https://imas.iter.org) IDS data. It reads data with
 - a time cursor: profiles and maps follow the time picked on a trace or on the time bar,
 - several data sources overlaid in every panel, like shots in jScope,
 - wildcards over arrays of structures: every coil, channel or ion species at once,
-- coils, walls and plasma boundaries drawn in the poloidal (R, Z) plane,
+- coils, walls, plasma boundaries and particle births drawn in the poloidal (R, Z)
+  plane,
 - an IDS browser that lists the quantities filled in a source,
 - configurations saved as YAML, which can be applied to other data,
 - the last session back when idscope starts again: panels, sources and time,
-- templates for `core_profiles`, `core_sources`, `equilibrium` and `pf_active`.
+- templates for `core_profiles`, `core_sources`, `equilibrium` and `pf_active`, and
+  for the results of neutral beam codes (`nbi`) and free-boundary equilibrium solvers
+  (`free_boundary`).
 
 ![idscope showing two synthetic data sources](docs/idscope-demo.png)
 
@@ -59,15 +62,19 @@ idscope --list shot.nc core_profiles         # list the quantities of an IDS
 
 ## Templates
 
-Templates are ready-made configurations for common IDSs. Start from one with
-`idscope -T NAME SOURCE ...` or File → New from template; `idscope --list-templates`
-prints their names.
+Templates are ready-made configurations for common IDSs, and for the results of
+some kinds of codes. Start from one with `idscope -T NAME SOURCE ...` or File → New
+from template; `idscope --list-templates` prints their names. Templates for the
+results of a kind of code also go by the names of such codes: `-T nubdec` (NuBDeC)
+is `nbi`, and `-T sonamu` and `-T freegs` (SONAMU, FreeGS) are `free_boundary`.
 
 | template | shows |
 |---|---|
 | `core_profiles` | Ip, central Te/Ti/ne, loop voltage, li and beta over time; Te/Ti, ne/ni, q, current densities and Zeff profiles; Te and ne against (t, x) |
 | `core_sources` | for every source (beams, waves, ohmic, ...): profiles of electron and ion heating, current density, particles and torque density; power, driven current and torque over time; the power at the selected time, as bars |
 | `equilibrium` | profiles: q, pressure, current densities (j_phi, j_parallel), dp/dpsi, FF', elongation and triangularities |
+| `free_boundary` (`sonamu`, `freegs`) | the poloidal plane: flux surfaces, plasma boundary, X-points and those the solver was asked to hold, magnetic axis, coils and wall; the coil currents, as bars; p', FF', q and pressure against psi_n |
+| `nbi` (`nubdec`) | what the beams give the plasma: profiles of electron and ion heating, driven current and torque densities; fast ion density and pressures; where the ions of the beams are born (markers) and where the neutrons are (a map per reaction), in the poloidal plane; the neutron rates over time, D-D beam-thermal and thermal apart |
 | `pf_active` | current and voltage of every coil over time; the coil currents at the selected time, as bars; the coils in the poloidal plane, with the flux surfaces, the plasma boundary, the magnetic axis and the wall |
 
 Profiles are drawn against rho_tor_norm or, when it is not filled, against the
@@ -76,7 +83,9 @@ below). The templates work with Data Dictionary 3 and 4 data thanks to alternati
 paths. Panels whose quantities are not filled in a source say so, e.g. the coil
 voltages of a pf_active written by an equilibrium code, which only has currents, or
 the totals of a core_sources written by a beam deposition code, which only has
-profiles.
+profiles. The output of a beam code has no equilibrium and no wall: to draw the
+births over the flux surfaces, give the data entry the code was run on as a second
+source.
 A template saved with File → Save as becomes a configuration that can be edited.
 
 ![equilibrium template on the ITER 134173/106 training data](docs/template-equilibrium.png)
@@ -84,6 +93,10 @@ A template saved with File → Save as becomes a configuration that can be edite
 ![pf_active template comparing two synthetic sources](docs/template-pf_active.png)
 
 ![core_sources template comparing two synthetic sources](docs/template-core_sources.png)
+
+![nbi template comparing two synthetic sources](docs/template-nbi.png)
+
+![free_boundary template comparing two synthetic sources](docs/template-free_boundary.png)
 
 ## Using the scope
 
@@ -174,6 +187,8 @@ pf_active/coil[:]/element[:]/geometry                the coils in (R, Z)
 wall/description_2d[0]/limiter/unit[:]/outline       the wall in (R, Z)
 equilibrium/time_slice/boundary/outline              the plasma boundary in (R, Z), per time slice
 equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a point per time slice
+distribution_sources/source[:]/markers               where the particles of every source are born
+distribution_sources/source[:]/ggd/particles[0]/values   a map per source, on a grid of R by Z
 ```
 
 - The time-dependent array of structures (`profiles_1d`, `time_slice`, ...) is left
@@ -183,7 +198,8 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
 - Other arrays of structures need an index: `ion[0]`, `flux_loop(1)`, `coil[-1]`
   (the last one), or a **wildcard**: `:` for all elements, `a:b` or `a:b:step`
   for some of them (Fortran ranges `(a:b)` include both ends). A path with wildcards
-  has a member per element, named after its `name` (or `label`, `identifier`): a
+  has a member per element, named after its `name` (or `label`, `identifier`, or
+  the process of a distribution source, e.g. `D_D_to_3He_n beam_thermal`): a
   curve per coil in time traces, a bar per coil at the selected time in a profile
   panel. Elements with the same name are told apart as `nbi`, `nbi#2`, and a member
   has the same color in all the panels of the window. Wildcards can be nested
@@ -209,8 +225,14 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
   time-dependent arrays of structures (`profiles_1d`, `time_slice`, ...).
 - A path to a structure that describes a shape draws it in the poloidal plane, over
   maps: the 2D geometry of coils and passive loops (outline, rectangle,
-  parallelogram, arcs of circle, annulus or thick line), `r`/`z` outlines and
-  `r`/`z` points. The IDS browser lists them as *shape*.
+  parallelogram, arcs of circle, annulus or thick line), `r`/`z` outlines,
+  `r`/`z` points, and the markers of a particle distribution, as dots (the columns
+  of their `positions` that their `coordinate_identifier` says are R and Z). The IDS
+  browser lists them as *shape*.
+- The `values` of a GGD quantity on a structured grid (grid identifier
+  `structured_spaces`: two spaces of one dimension, e.g. R and Z) are a map, on the
+  nodes of the grid (the first space running fastest) or on its cells. Values on
+  other grids are drawn along their index.
 - The x axis and the time come from the Data Dictionary coordinates, for homogeneous
   and heterogeneous time alike. Another x can be chosen per signal (`x:` in the
   configuration, *X path* in the setup dialog), e.g. `core_profiles/profiles_1d/grid/psi`.
@@ -236,7 +258,7 @@ names; this is noted in the log. `--dd-version` selects the version to use.
 |---|---|---|
 | `trace` | y(t) | scalars in a time array of structures, arrays along a time coordinate |
 | `profile` | y(x), at the current time for profiles in a time array of structures, or a bar per element | 1D quantities; values of paths with wildcards |
-| `map` | z(x1, x2), at the current time for maps in a time array of structures, with shapes over it | 2D quantities, e.g. `profiles_2d[0]/psi`; shapes in (R, Z) |
+| `map` | z(x1, x2), at the current time for maps in a time array of structures, with shapes over it | 2D quantities, e.g. `profiles_2d[0]/psi`; values of a GGD on a structured grid; shapes in (R, Z) |
 | `spacetime` | a profile as an image z(t, x) | 1D quantities in a time array of structures |
 
 `auto` (the default) picks the kind from the first signal; a value per element of a
@@ -250,6 +272,16 @@ level instead of an image.
 When a panel compares several sources, curves take the color of their signal (or
 member, e.g. coil) and the line style of their source; the legend has an entry for
 each, instead of one for every combination.
+
+A graph against time says nothing of data that is all at one and the same time,
+such as what a code gives for the time it was run for. A trace panel then shows
+bars of the values at that time (a bar per signal, or per member of a signal with
+wildcards, labeled with its value when there are few), and a time-space panel the
+profiles. Data at several times keeps its time axis, also when each source has one
+time (runs of a code at different times show how things changed), and so does a
+source at one time among sources over a whole pulse: it is a point at its time.
+With a single time slice, the time bar has nothing to step through and the time is
+that of the data.
 
 ## Configuration
 

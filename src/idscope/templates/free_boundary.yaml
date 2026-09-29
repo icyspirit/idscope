@@ -1,0 +1,67 @@
+# idscope template: an equilibrium from a free-boundary solver, with the coils that
+# hold it (SONAMU and FreeGS in tbd-fusion, for two: "-T sonamu" and "-T freegs" are
+# this template).
+#
+#   idscope -T free_boundary SOURCE [SOURCE ...]
+#
+# The flux surfaces, the boundary and its X-points, the X-points the solver was asked
+# to hold (constraints), the coils and the wall; the coil currents, as bars at the
+# selected time; and p', FF', q and the pressure against psi normalized from the
+# magnetic axis to the boundary. X-points are boundary/x_point in Data Dictionary 3;
+# in Data Dictionary 4 they are the critical points of the contour tree after the
+# first, which is the magnetic axis.
+title: free_boundary
+columns:
+  - width: 1.4
+    panels:
+      - title: Poloidal cross-section
+        kind: map
+        equal_aspect: true
+        contours: 20
+        x_label: R [m]
+        y_label: Z [m]
+        signals:
+          - path: equilibrium/time_slice/profiles_2d[0]/psi
+          - path: equilibrium/time_slice/boundary/outline
+            label: boundary
+          - path: equilibrium/time_slice/boundary/x_point[:] | equilibrium/time_slice/boundary_separatrix/x_point[:] | equilibrium/time_slice/contour_tree/node[1:]
+            label: X-points
+          - path: equilibrium/time_slice/constraints/x_point[:]/position_measured
+            label: X-points to hold
+          - path: equilibrium/time_slice/global_quantities/magnetic_axis
+            label: magnetic axis
+          - path: pf_active/coil[:]/element[:]/geometry | pf_active/coil[:]/geometry
+            label: coils
+            color: "#4c4c4c"
+          - path: wall/description_2d[0]/limiter/unit[:]/outline
+            label: wall
+            color: "#7f7f7f"
+  - panels:
+      - title: Coil currents
+        kind: profile
+        signals:
+          - path: pf_active/coil[:]/current/data
+            scale: 1.0e-3
+        y_label: I [kA]
+      - title: p'
+        signals:
+          - path: equilibrium/time_slice/profiles_1d/dpressure_dpsi
+            x: &psi_n equilibrium/time_slice/profiles_1d/psi_norm | norm(equilibrium/time_slice/profiles_1d/psi)
+            scale: 1.0e-3
+        y_label: dp/dpsi [kPa Wb^-1]
+      - title: FF'
+        signals:
+          - path: equilibrium/time_slice/profiles_1d/f_df_dpsi
+            x: *psi_n
+        y_label: F dF/dpsi [T^2 m^2 Wb^-1]
+      - title: Safety factor
+        signals:
+          - path: equilibrium/time_slice/profiles_1d/q
+            x: *psi_n
+        y_label: q
+      - title: Pressure
+        signals:
+          - path: equilibrium/time_slice/profiles_1d/pressure
+            x: *psi_n
+            scale: 1.0e-3
+        y_label: p [kPa]

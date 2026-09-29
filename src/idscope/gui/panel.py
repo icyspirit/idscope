@@ -11,7 +11,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from idscope.config import PanelConfig, SignalConfig
 from idscope.data import MAP, PROFILE, SHAPE, TRACE, Channels, MapSeries, ProfileSeries
 from idscope.data import Shapes, SignalData, parse_alternatives
-from idscope.data.extract import GEOMETRY, POINT
+from idscope.data.extract import GEOMETRY, MARKERS, POINT
 from idscope.data.sources import DataSource
 from idscope.errors import IdscopeError
 from idscope.gui import style
@@ -37,8 +37,28 @@ _DATA_KIND_TO_PANEL = {TRACE: "trace", PROFILE: "profile", MAP: "map", SHAPE: "m
 _MAX_SHAPE_LABELS = 40
 """Shapes are named on the map (e.g. coils) when there are no more of them."""
 _MAX_CATEGORY_LABELS = 24
+_MIN_BAR_SLOTS = 4
+"""Bars take the room of at least this many elements (else a single bar would
+fill the panel)."""
+_MAX_VALUE_LABELS = 16
+"""Bars of data at one time are labeled with their values when there are no more."""
+_TOP_ROOM = 44
+"""Pixels above the highest labeled bar: for its value, and the title above it."""
+_BOTTOM_ROOM = 20
+"""Pixels below the lowest (negative) labeled bar, for its value."""
 _HINT = "Double-click to set up, or drop a signal from the IDS browser"
 _FONT_SIZE = 8  # points
+
+
+class _Axes(NamedTuple):
+    """Labels, ranges and log scales of the axes (None: automatic)."""
+
+    x_label: Optional[str]
+    y_label: Optional[str]
+    x_range: Optional[Tuple[float, float]]
+    y_range: Optional[Tuple[float, float]]
+    log_x: bool
+    log_y: bool
 
 
 class Curve(NamedTuple):
@@ -64,6 +84,34 @@ def _is_uniform(x: np.ndarray) -> bool:
         return True
     step = np.diff(x)
     return bool(np.all(step > 0) and np.allclose(step, step[0], rtol=1e-3, atol=0))
+
+
+def _at_one_time(loaded) -> bool:
+    """Whether the data of a panel that depends on time is all at one and the same
+    time: every trace or profile a single sample or slice, at the same time. (A
+    time graph of runs of a code at different times, one time each, says something.)
+    """
+    times = []
+    for entry in loaded:
+        data = entry[4]
+        for member in data.members if isinstance(data, Channels) else [data]:
+            if member.kind in (TRACE, PROFILE) and member.time is not None:
+                times.append(member.time)
+    if not times:
+        return False
+    times = np.concatenate(times)
+    times = times[np.isfinite(times)]
+    return times.size > 0 and bool(np.all(times == times[0]))
+
+
+def _margin(room: float, padding: float = 0.1) -> float:
+    """The margin beyond the data, as a fraction of their range, that leaves
+    ``room`` (a fraction of the height of the plot) once the plot has added its
+    own ``padding`` on both sides."""
+    need = room * (1 + 2 * padding) - padding
+    if need <= 0:
+        return 0.0
+    return min(need / max(1 - need, 0.25), 3.0)
 
 
 def _edges(x: np.ndarray) -> np.ndarray:
@@ -179,6 +227,12 @@ class Panel(QtWidgets.QFrame):
         self._time_line = None
         self._bars: List[Curve] = []  # members of wildcard traces, as bars per element
         self._categories: List[str] = []  # the elements the bars stand for
+        self._one_time: Optional[str] = None
+        """The kind of a panel of time traces or time-space images whose data is all
+        at one time, and which then shows it as it is at that time (see load)."""
+        self._value_labels: List[object] = []  # values written on the bars
+        self._labeled_heights: List[float] = []  # heights of the bars labeled
+        self._bar_room = None  # an invisible line: the room the bars take
         self._member_colors: dict = member_colors if member_colors is not None else {}
         self._legend_entries: List[Tuple[object, str]] = []
         self._legend_proxies: List[object] = []  # legend samples of the line styles
@@ -240,6 +294,8 @@ class Panel(QtWidgets.QFrame):
         self.title_item.setPos(2, 1)
         self.title_item.setZValue(100)
         self._install_menu()
+        # The room above bars for their values depends on the height of the plot
+        self.plot.getViewBox().sigResized.connect(lambda view: self._make_bar_room())
         scene = self.graphics.scene()
         scene.sigMouseClicked.connect(self._on_click)
         scene.sigMouseMoved.connect(self._on_move)
@@ -300,13 +356,16 @@ class Panel(QtWidgets.QFrame):
         )
 
     def set_current(self, current: bool) -> None:
-        color = style.CURRENT_PANEL_COLOR if current else "#c8c8c8"
+        """Frame the current panel; the others have no frame (their axes tell them
+        apart), which keeps them clear of gray lines."""
+        color = style.CURRENT_PANEL_COLOR if current else "transparent"
         self.setStyleSheet(f"Panel {{ border: 1px solid {color}; }}")
 
     def apply_config(self) -> None:
         """Apply the settings that do not require reloading data."""
         cfg = self.config
-        self.plot.setLogMode(x=cfg.log_x, y=cfg.log_y)
+        axes = self._axes()
+        self.plot.setLogMode(x=axes.log_x, y=axes.log_y)
         self.legend.setVisible(cfg.legend and bool(self.legend.items))
         self.plot.getViewBox().setAspectLocked(cfg.equal_aspect)
         self._update_title()
@@ -314,16 +373,31 @@ class Panel(QtWidgets.QFrame):
         self.apply_ranges()
 
     def apply_ranges(self) -> None:
-        cfg = self.config
+        axes = self._axes()
         view = self.plot.getViewBox()
-        if cfg.x_range:
-            view.setXRange(*cfg.x_range, padding=0)
+        if axes.x_range:
+            view.setXRange(*axes.x_range, padding=0)
         else:
             view.enableAutoRange(axis=pg.ViewBox.XAxis)
-        if cfg.y_range:
-            view.setYRange(*cfg.y_range, padding=0)
+        if axes.y_range:
+            view.setYRange(*axes.y_range, padding=0)
         else:
             view.enableAutoRange(axis=pg.ViewBox.YAxis)
+
+    def _axes(self) -> _Axes:
+        """The axis settings of the configuration, as they apply to what is shown.
+
+        Data at one time is shown as it is at that time (see load): what the
+        configuration says of the time axis no longer applies, and the y axis of a
+        time-space image becomes the x axis of its profiles.
+        """
+        cfg = self.config
+        if self._one_time == "trace":  # bars
+            return _Axes(None, cfg.y_label, None, cfg.y_range, False, False)
+        if self._one_time == "spacetime":  # profiles
+            return _Axes(cfg.y_label, None, cfg.y_range, None, cfg.log_y, False)
+        return _Axes(cfg.x_label, cfg.y_label, cfg.x_range, cfg.y_range, cfg.log_x,
+                     cfg.log_y)
 
     def autoscale(self) -> None:
         self.plot.getViewBox().enableAutoRange()
@@ -386,12 +460,17 @@ class Panel(QtWidgets.QFrame):
         self._named_signals = set()
         self._bars = []
         self._categories = []
+        self._remove_value_labels()
+        if self._bar_room is not None:
+            self.plot.removeItem(self._bar_room)
+            self._bar_room = None
         self.plot.getAxis("bottom").setTicks(None)
         self._remove_image()
         if self._time_line is not None:
             self.plot.removeItem(self._time_line)
             self._time_line = None
         self.kind = None
+        self._one_time = None
         self.errors = []
         self._image_curves = []
         self._image_time = self._title_time = None
@@ -427,6 +506,14 @@ class Panel(QtWidgets.QFrame):
                 loaded.append((signal_index, signal, source_index, source.label, data))
 
         self.kind = self._resolve_kind(loaded)
+        if self.kind in ("trace", "spacetime") and _at_one_time(loaded):
+            # Against time, data that is all at one time (e.g. what a code gives
+            # for the time it was run for) is a lone point, or an image one time
+            # wide: it is shown as it is at that time instead, traces as bars of
+            # their values and time-space images as the profiles
+            self._one_time, self.kind = self.kind, "profile"
+        axes = self._axes()
+        self.plot.setLogMode(x=axes.log_x, y=axes.log_y)
         accepted = []
         for entry in loaded:
             problem = self._incompatibility(entry[4])
@@ -436,8 +523,12 @@ class Panel(QtWidgets.QFrame):
                 accepted.append(entry)
         sources_shown = sorted({(entry[2], entry[3]) for entry in accepted})
         n_signals = len(self.config.signals)
-        for entry in accepted:
-            self._add_curves(*entry, n_sources=len(sources_shown), n_signals=n_signals)
+        if self._one_time == "trace":
+            self._add_bars_at_one_time(accepted, sources_shown)
+        else:
+            for entry in accepted:
+                self._add_curves(*entry, n_sources=len(sources_shown),
+                                 n_signals=n_signals)
         if len(sources_shown) > 1 and self._styled_sources:
             # Colors tell the signals (or members) apart: say which line style is
             # which source
@@ -490,6 +581,11 @@ class Panel(QtWidgets.QFrame):
                 return None
             return (f"'{data.path.text}' is a shape in the (R, Z) plane and can only be "
                     "shown in a map panel.")
+        if self._one_time == "trace":  # bars of the values of traces
+            if data.kind == TRACE:
+                return None
+            return (f"'{data.path.text}' is a {data.kind} and cannot be shown in a "
+                    "trace panel.")
         if isinstance(data, Channels):
             if kind == "profile" and data.kind == TRACE:
                 return None  # a bar per element, at the selected time
@@ -607,6 +703,9 @@ class Panel(QtWidgets.QFrame):
             item = pg.PlotDataItem(pen=None, symbol=symbol, symbolSize=10,
                                    symbolPen=pg.mkPen(pen.color(), width=2),
                                    symbolBrush=None)
+        elif data.shape == MARKERS:  # often thousands: small dots, no outline
+            item = pg.PlotDataItem(pen=None, symbol="o", symbolSize=3, symbolPen=None,
+                                   symbolBrush=pg.mkBrush(pen.color()))
         elif data.shape == GEOMETRY:
             fill = QtGui.QColor(pen.color())
             fill.setAlpha(60)
@@ -642,13 +741,14 @@ class Panel(QtWidgets.QFrame):
     # -------------------------------------------------------------------- bars
 
     def _add_bars(self, signal: SignalConfig, signal_index: int, source: str,
-                  source_index: int, data: Channels, name: str, label: str) -> None:
+                  source_index: int, data: Channels, name: str, label: Optional[str],
+                  color: Optional[str] = None) -> None:
         """Values of the members of a signal with wildcards (e.g. the current of
         every coil) as bars, at the selected time."""
         for member_name in data.names:
             if member_name not in self._categories:
                 self._categories.append(member_name)
-        color = signal.color or style.PALETTE[len(self._bars) % len(style.PALETTE)]
+        color = color or signal.color or style.PALETTE[len(self._bars) % len(style.PALETTE)]
         item = pg.BarGraphItem(x=[0.0], height=[0.0], width=0.8, brush=color,
                                pen=pg.mkPen(QtGui.QColor(color).darker(140)))
         item.setVisible(False)  # until the first set_time
@@ -657,26 +757,118 @@ class Panel(QtWidgets.QFrame):
         self._bars.append(curve)
         self._add_curve(curve)
 
+    def _add_bars_at_one_time(self, accepted, sources_shown) -> None:
+        """Time traces that are all at one time, as bars of their values: a bar per
+        signal, or per member of a signal with wildcards (e.g. per coil).
+
+        The bars of a source have its color, and the legend says which source is
+        which; when signals share their members (e.g. the currents and the
+        voltages of the coils), the bars have a color per signal and source instead,
+        as those of signals with wildcards otherwise do.
+        """
+        n_sources = len(sources_shown)
+        rank = {index: k for k, (index, _) in enumerate(sources_shown)}
+        bars, signals_of = [], {}
+        for signal_index, signal, source_index, source, data in accepted:
+            base = signal.label or data.path.label
+            if not isinstance(data, Channels):  # a bar of its own, named after it
+                data = Channels(data.path, [data], [base], data.value_axis,
+                                data.documentation)
+            for name in data.names:
+                signals_of.setdefault(name, set()).add(signal_index)
+            bars.append((signal_index, signal, source_index, source, data, base))
+        shared = any(len(indices) > 1 for indices in signals_of.values())
+        for signal_index, signal, source_index, source, data, base in bars:
+            suffix = f" [{source}]" if n_sources > 1 else ""
+            if shared:
+                color, label = None, base + suffix
+            else:
+                color = style.PALETTE[rank[source_index] % len(style.PALETTE)]
+                if n_sources == 1 and signal.color:
+                    color = signal.color
+                label = source if n_sources > 1 else None  # the bars are named
+            self._add_bars(signal, signal_index, source, source_index, data,
+                           base + suffix, label, color)
+
     def _set_categories(self) -> None:
         """Name the bars on the x axis (some of them when there are many)."""
         step = int(np.ceil(len(self._categories) / _MAX_CATEGORY_LABELS))
         ticks = [(float(i), name) for i, name in enumerate(self._categories)]
         self.plot.getAxis("bottom").setTicks([ticks[::step]])
+        self._bar_room = pg.PlotDataItem(pen=pg.mkPen(0, 0, 0, 0))  # transparent
+        self.plot.addItem(self._bar_room)
 
     def _update_bars(self, t: Optional[float]) -> List[Tuple[Curve, Optional[float]]]:
-        """Heights of the bars at time t; returns the time of the values shown."""
-        shown = []
-        width = 0.8 / max(len(self._bars), 1)
-        for group, curve in enumerate(self._bars):
+        """Heights of the bars at time t; returns the time of the values shown.
+
+        The bars that stand for the same element (e.g. a coil in two sources) are
+        side by side around it, as wide as the element with the most bars allows.
+        """
+        shown, drawn = [], []
+        at: dict = {}  # element -> its bars
+        for curve in self._bars:
+            for name in curve.data.names:
+                at.setdefault(name, []).append(curve)
+        width = 0.8 / max((len(group) for group in at.values()), default=1)
+        for curve in self._bars:
             values, t_slice = curve.data.values_at(t)
-            offset = (group - (len(self._bars) - 1) / 2) * width
-            x = np.array([self._categories.index(n) for n in curve.data.names], float)
+            x = np.empty(len(curve.data.names))
+            for k, name in enumerate(curve.data.names):
+                group = at[name]
+                rank = next(i for i, other in enumerate(group) if other is curve)
+                x[k] = self._categories.index(name) + (rank - (len(group) - 1) / 2) * width
             heights = curve.scaled(values)
             valid = np.isfinite(heights)
-            curve.item.setOpts(x=x[valid] + offset, height=heights[valid], width=width)
+            curve.item.setOpts(x=x[valid], height=heights[valid], width=width)
             curve.item.setVisible(bool(valid.any()))
             shown.append((curve, t_slice))
+            drawn += zip(x[valid], heights[valid])
+        self._remove_value_labels()
+        labeled = self._one_time == "trace" and len(drawn) <= _MAX_VALUE_LABELS
+        if labeled:
+            self._label_values(drawn)
+        self._labeled_heights = [float(height) for _, height in drawn] if labeled else []
+        self._make_bar_room()
         return shown
+
+    def _make_bar_room(self) -> None:
+        """Keep the room of a few elements at least (a single bar would fill the
+        panel), and, for the height of the panel, room for the values written at
+        the ends of the bars and for the title above them."""
+        if self._bar_room is None:
+            return
+        n = len(self._categories)
+        center, half = (n - 1) / 2, max(n, _MIN_BAR_SLOTS) / 2
+        low = high = 0.0
+        if self._labeled_heights:
+            top = max(max(self._labeled_heights), 0.0)
+            bottom = min(min(self._labeled_heights), 0.0)
+            span = (top - bottom) or 1.0
+            size = self.plot.getViewBox().height()
+            size = size if size > 0 else 150.0  # not laid out yet
+            if top > 0:
+                high = top + _margin(_TOP_ROOM / size) * span
+            if bottom < 0:
+                low = bottom - _margin(_BOTTOM_ROOM / size) * span
+        self._bar_room.setData([center - half, center + half], [low, high])
+
+    def _label_values(self, bars) -> None:
+        """Write the value of every bar ``(x, height)`` at its end."""
+        font = QtGui.QFont()
+        font.setPointSize(_FONT_SIZE - 1)
+        for x, height in bars:
+            label = pg.TextItem(f"{height:.4g}", color="#303030",
+                                anchor=(0.5, 1.0) if height >= 0 else (0.5, 0.0))
+            label.setFont(font)
+            label.setPos(float(x), float(height))
+            label.setZValue(20)
+            self.plot.addItem(label, ignoreBounds=True)
+            self._value_labels.append(label)
+
+    def _remove_value_labels(self) -> None:
+        for label in self._value_labels:
+            self.plot.removeItem(label)
+        self._value_labels = []
 
     # ------------------------------------------------------------------ images
 
@@ -848,7 +1040,7 @@ class Panel(QtWidgets.QFrame):
                 shown.append((curve, t_slice))
             elif isinstance(curve.data, Shapes):
                 outlines, t_slice = curve.data.at(t)
-                x, y = _joined(outlines, curve.data.shape != POINT)
+                x, y = _joined(outlines, curve.data.shape not in (POINT, MARKERS))
                 curve.item.setData(x, y)
                 if curve.data.is_time_dependent:
                     shown.append((curve, t_slice))
@@ -883,7 +1075,12 @@ class Panel(QtWidgets.QFrame):
         slices, traces = [], []
         for curve in self.curves:
             if isinstance(curve.data, Channels):  # bars: stepped through like slices
-                slices += [m.time for m in curve.data.members if m.time is not None]
+                # (unless they are traces at one time: their time is a trace's)
+                times = [m.time for m in curve.data.members if m.time is not None]
+                if self._one_time == "trace":
+                    traces += times
+                else:
+                    slices += times
                 continue
             time = curve.data.time
             if time is None:
@@ -919,7 +1116,6 @@ class Panel(QtWidgets.QFrame):
         self.title_item.setVisible(bool(text))
 
     def _update_labels(self) -> None:
-        cfg = self.config
         x_title = y_title = ""
         shown = self._selected_image() if self.kind in ("map", "spacetime") else None
         curves = [shown] if shown is not None else self.curves
@@ -949,8 +1145,9 @@ class Panel(QtWidgets.QFrame):
                     )
         self._update_colorbar_label()
         style_args = {"font-size": f"{_FONT_SIZE}pt"}
-        x_text = cfg.x_label if cfg.x_label is not None else x_title
-        y_text = cfg.y_label if cfg.y_label is not None else y_title
+        axes = self._axes()
+        x_text = axes.x_label if axes.x_label is not None else x_title
+        y_text = axes.y_label if axes.y_label is not None else y_title
         self.plot.setLabel("bottom", x_text, **style_args)
         # Always show a y label (a space when empty): its width is added to the
         # fixed axis width, and must be the same in all panels to line them up

@@ -34,7 +34,7 @@ from idscope.gui.panel import COLORBAR_SPACE, Panel
 from idscope.gui.setup_dialog import SetupDialog
 from idscope.gui.timebar import TimeBar
 from idscope.session import SETTINGS_FILE, config_dir, save_session
-from idscope.templates import load_template, template_names
+from idscope.templates import aliases_of, load_template, template_names
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +162,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._session_timer.setInterval(SESSION_DELAY_MS)
         self._session_timer.timeout.connect(self._write_session)
         self.resize(1300, 850)
+        # White around the plots as well (their headers, the time bar, the docks)
+        palette = self.palette()
+        palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor("white"))
+        self.setPalette(palette)
 
         self._build_toolbar()
         self.timebar = TimeBar()
@@ -287,7 +291,9 @@ class MainWindow(QtWidgets.QMainWindow):
             if slot == self.new_config:
                 templates_menu = file_menu.addMenu("New from &template")
                 for name in template_names():
-                    templates_menu.addAction(name).triggered.connect(
+                    aliases = aliases_of(name)
+                    text = f"{name} ({', '.join(aliases)})" if aliases else name
+                    templates_menu.addAction(text).triggered.connect(
                         lambda checked=False, n=name: self.new_from_template(n)
                     )
             elif slot == self.open_config:
@@ -369,6 +375,9 @@ class MainWindow(QtWidgets.QMainWindow):
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(4)
+        # Handles (of the columns too) without the grip the style would draw: only
+        # white between the panels
+        splitter.setStyleSheet("QSplitter::handle { background: transparent; }")
         # emitted when the user drags a handle, not when the window is resized
         splitter.splitterMoved.connect(self._on_splitter_moved)
         for column in self.config.columns:
@@ -608,7 +617,13 @@ class MainWindow(QtWidgets.QMainWindow):
             grid = np.empty(0)
         grid = grid[np.isfinite(grid)]
         self.timebar.set_grid(grid)
-        if self.time is None and len(grid):
+        times = np.concatenate(slices + traces) if slices or traces else np.empty(0)
+        times = np.unique(times[np.isfinite(times)])
+        if len(times) == 1 and self.time != float(times[0]):
+            # All the data is at one time (e.g. what a code gives for the time it
+            # was run for): that is the time
+            self.set_time(float(times[0]))
+        elif self.time is None and len(grid):
             self.set_time(float(grid[len(grid) // 2]))
         else:  # e.g. the time of a configuration, which the panels were loaded at
             self.timebar.set_time(self.time)

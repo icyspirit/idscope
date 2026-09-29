@@ -32,7 +32,7 @@ def _set_first(node, names, value) -> None:
 
 
 def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME,
-                  rho_tor_norm: bool = True):
+                  rho_tor_norm: bool = True, time: Optional[float] = None):
     """core_profiles with homogeneous time, electrons and two ion species.
 
     The second ion species is missing in the last three time slices.
@@ -40,17 +40,21 @@ def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME,
     Args:
         rho_tor_norm: fill ``profiles_1d/grid/rho_tor_norm`` (profiles can otherwise
             be drawn against the normalized psi).
+        time: write this single time instead, like a code run for one time (with
+            both ion species).
     """
     from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
 
     cp = factory.core_profiles()
     cp.ids_properties.homogeneous_time = IDS_TIME_MODE_HOMOGENEOUS
     cp.ids_properties.comment = "idscope synthetic demo data"
-    t = np.linspace(0.0, 10.0, n_time)
+    t = np.linspace(0.0, 10.0, n_time) if time is None else np.array([time])
+    n_time = len(t)
     cp.time = t
     rho = np.linspace(0.0, 1.0, N_RHO)
     te0 = scale * _profile_scale(t)
     ramp = np.minimum(t / 2.0, 1.0)
+    beam = scale * _switch_on(t, 3.0)
     cp.profiles_1d.resize(n_time)
     for i, p1d in enumerate(cp.profiles_1d):
         p1d.time = t[i]
@@ -61,12 +65,17 @@ def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME,
         p1d.electrons.temperature = te0[i] * shape + 50.0
         density = scale * 5.0e19 * (1.0 - 0.7 * rho**2) + 2.0e18
         p1d.electrons.density = density
-        n_ion = 2 if i < n_time - 3 else 1
+        n_ion = 2 if i < n_time - 3 or time is not None else 1
         p1d.ion.resize(n_ion)
         for j, ion in enumerate(p1d.ion):
             _set_first(ion, ("name", "label"), ("D", "C")[j])
             ion.z_ion = 1.0 + j
             ion.temperature = (0.8 - 0.2 * j) * te0[i] * shape + 40.0
+            if j == 0 and beam[i] > 1e-3:  # the fast deuterons of the beam
+                fast = beam[i] * (1.0 - rho**2) ** 2
+                ion.density_fast = 2.0e18 * fast
+                ion.pressure_fast_parallel = 3.0e3 * fast
+                ion.pressure_fast_perpendicular = 5.0e3 * fast
         p1d.t_i_average = 0.8 * te0[i] * shape + 40.0
         p1d.n_i_thermal_total = 0.9 * density
         p1d.zeff = 1.6 + 0.4 * rho**2
@@ -84,18 +93,20 @@ def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME,
 
 
 def equilibrium(factory, scale: float = 1.0, n_time: int = N_TIME,
-                rho_tor_norm: bool = True):
+                rho_tor_norm: bool = True, time: Optional[float] = None):
     """equilibrium with scalars, 1D profiles and a rectangular (R, Z) psi map.
 
     Args:
         rho_tor_norm: fill ``profiles_1d/rho_tor_norm`` (profiles can otherwise be
             drawn against the normalized psi).
+        time: write this single time slice instead, like a free-boundary solver.
     """
     from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
 
     eq = factory.equilibrium()
     eq.ids_properties.homogeneous_time = IDS_TIME_MODE_HOMOGENEOUS
-    t = np.linspace(0.0, 10.0, n_time)
+    t = np.linspace(0.0, 10.0, n_time) if time is None else np.array([time])
+    n_time = len(t)
     eq.time = t
     eq.vacuum_toroidal_field.r0 = 1.8
     eq.vacuum_toroidal_field.b0 = np.full(n_time, -2.5)
@@ -144,6 +155,24 @@ def equilibrium(factory, scale: float = 1.0, n_time: int = N_TIME,
         p2d.psi = scale * (((rr - r0) / 0.5) ** 2 + (zz / (0.5 * kappa)) ** 2)
         ts.boundary.outline.r = r0 + 0.5 * np.cos(theta + 0.3 * np.sin(theta))
         ts.boundary.outline.z = 0.5 * kappa * np.sin(theta)
+        # An X-point at the bottom of the boundary, and where a free-boundary
+        # solver was asked to put it
+        x_point = (r0 - 0.15, -0.5 * kappa)
+        if hasattr(ts.boundary, "x_point"):  # Data Dictionary 3
+            ts.boundary.x_point.resize(1)
+            ts.boundary.x_point[0].r, ts.boundary.x_point[0].z = x_point
+        else:  # Data Dictionary 4: the critical points of the contour tree, the
+            # magnetic axis (here a minimum of psi) first and the X-point (a saddle)
+            ts.contour_tree.node.resize(2)
+            axis = (gq.magnetic_axis.r.value, gq.magnetic_axis.z.value)
+            for node, critical_type, (r_node, z_node) in zip(
+                ts.contour_tree.node, (0, 1), (axis, x_point)
+            ):
+                node.critical_type = critical_type
+                node.r, node.z = r_node, z_node
+        ts.constraints.x_point.resize(1)
+        target = ts.constraints.x_point[0].position_measured
+        target.r, target.z = x_point[0] - 0.02, x_point[1] - 0.04
     return eq
 
 
@@ -317,6 +346,132 @@ def core_sources(factory, scale: float = 1.0, n_time: int = N_TIME):
     return cs
 
 
+def structured_grid(grid, axes) -> None:
+    """Write a rectilinear GGD grid: a space of one dimension per axis, its nodes
+    the points of the axis (as NuBDeC in tbd-fusion writes it). ``axes`` are pairs
+    of a coordinate name (e.g. ``"r"``) and its points. Values on the nodes of
+    such a grid run with the first axis fastest."""
+    from imas.ids_identifiers import identifiers
+
+    grid.identifier.name = "structured_spaces"
+    grid.identifier.index = identifiers.ggd_identifier["structured_spaces"].index
+    grid.space.resize(len(axes))
+    for space, (coordinate, points) in zip(grid.space, axes):
+        member = identifiers.coordinate_identifier[coordinate]
+        if space.coordinates_type.metadata.data_type.name == "STRUCT_ARRAY":  # DD 4
+            space.coordinates_type.resize(1)
+            space.coordinates_type[0].name = member.name
+            space.coordinates_type[0].index = member.index
+        else:  # Data Dictionary 3: the indices of the coordinates
+            space.coordinates_type = np.array([member.index], dtype=np.int32)
+        space.objects_per_dimension.resize(1)
+        nodes = space.objects_per_dimension[0]
+        nodes.object.resize(len(points))
+        for node, value in zip(nodes.object, points):
+            node.geometry = [float(value)]
+    grid.grid_subset.resize(1)
+    grid.grid_subset[0].identifier.name = "nodes"
+    grid.grid_subset[0].identifier.index = identifiers.ggd_subset_identifier["nodes"].index
+
+
+DISTRIBUTION_TIMES = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
+NEUTRON_GRID = (np.linspace(1.2, 2.4, 25), np.linspace(-1.2, 1.2, 49))
+"""R and Z of the grid of the neutron birth rates."""
+
+
+def _neutron_births(t: np.ndarray, scale: float):
+    """Birth rates of the neutrons of D-D fusion [m^-3 s^-1] on
+    :data:`NEUTRON_GRID`, thermal and beam-thermal, at the times ``t``."""
+    r, z = np.meshgrid(*NEUTRON_GRID, indexing="ij")
+    inside = np.clip(1.0 - ((r - 1.8) / 0.55) ** 2 - (z / 0.95) ** 2, 0.0, None)
+    ramp = np.minimum(t / 2.0, 1.0)
+    beam = scale * _switch_on(t, 3.0)
+    thermal = [scale**2 * 2.0e15 * a * inside**4 for a in ramp]
+    beam_thermal = [scale * 8.0e15 * b * inside**2 * np.exp(-((z - 0.05) / 0.35) ** 2)
+                    for b in beam]
+    return {"thermal_thermal": thermal, "beam_thermal": beam_thermal}
+
+
+def _total(rate: np.ndarray) -> float:
+    """A birth rate on :data:`NEUTRON_GRID` summed over the torus [s^-1]."""
+    r, z = NEUTRON_GRID
+    volume = 2.0 * np.pi * r[:, None] * (r[1] - r[0]) * (z[1] - z[0])
+    return float((rate * volume).sum())
+
+
+def distribution_sources(factory, scale: float = 1.0, n_markers: int = 400):
+    """distribution_sources, as a neutral beam code writes them (NuBDeC in
+    tbd-fusion, for one): where the ions of the beam are born, as markers, and
+    where the neutrons of D-D fusion are, as birth rates on a grid of R by Z, at
+    :data:`DISTRIBUTION_TIMES`. The beam starts at 3 s."""
+    from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
+    from imas.ids_identifiers import identifiers
+
+    ds = factory.distribution_sources()
+    ds.ids_properties.homogeneous_time = IDS_TIME_MODE_HOMOGENEOUS
+    t = DISTRIBUTION_TIMES
+    ds.time = t
+    beam = scale * _switch_on(t, 3.0)
+    rng = np.random.default_rng(7)
+    births = _neutron_births(t, scale)
+    ds.source.resize(1 + len(births))
+
+    def process(source, name: str, energy: Optional[str] = None) -> None:
+        source.process.resize(1)
+        member = identifiers.distribution_source_identifier[name]
+        kind = source.process[0].type
+        kind.name, kind.index, kind.description = member.name, member.index, member.description
+        if energy is not None:
+            source.process[0].reactant_energy.name = energy
+            source.process[0].reactant_energy.index = {"thermal_thermal": 1,
+                                                       "beam_beam": 2,
+                                                       "beam_thermal": 3}[energy]
+
+    nbi = ds.source[0]
+    process(nbi, "NBI")
+    nbi.markers.resize(len(t))
+    nbi.global_quantities.resize(len(t))
+    columns = ("r", "z", "phi", "velocity_parallel", "velocity_perpendicular")
+    for i, markers in enumerate(nbi.markers):
+        markers.time = t[i]
+        totals = nbi.global_quantities[i]
+        totals.time = t[i]
+        totals.particles = beam[i] * 3.0e20
+        totals.power = beam[i] * 5.0e6
+        if beam[i] < 1e-3:
+            continue
+        # Born along the beam, which comes in from the low field side
+        r = np.clip(2.35 - rng.exponential(0.35, n_markers), 1.3, 2.35)
+        z = rng.normal(0.05, 0.1, n_markers)
+        markers.coordinate_identifier.resize(len(columns))
+        for identifier, name in zip(markers.coordinate_identifier, columns):
+            member = identifiers.coordinate_identifier[name]
+            identifier.name, identifier.index = member.name, member.index
+        markers.positions = np.column_stack([
+            r, z, rng.uniform(0.0, 2.0 * np.pi, n_markers),
+            rng.normal(1.5e6, 0.3e6, n_markers), rng.normal(0.8e6, 0.2e6, n_markers),
+        ])
+        markers.weights = np.full(n_markers, beam[i] * 3.0e20 / n_markers)
+
+    for k, (energy, rates) in enumerate(births.items(), start=1):
+        source = ds.source[k]
+        process(source, "D_D_to_3He_n", energy)
+        source.species.type.name = "neutron"
+        source.species.type.index = 6
+        source.ggd.resize(len(t))
+        source.global_quantities.resize(len(t))
+        for i, ggd in enumerate(source.ggd):
+            ggd.time = t[i]
+            structured_grid(ggd.grid, (("r", NEUTRON_GRID[0]), ("z", NEUTRON_GRID[1])))
+            ggd.particles.resize(1)
+            ggd.particles[0].grid_index = 1
+            ggd.particles[0].grid_subset_index = 1  # the nodes
+            ggd.particles[0].values = rates[i].ravel(order="F")  # R running fastest
+            source.global_quantities[i].time = t[i]
+            source.global_quantities[i].particles = _total(rates[i])
+    return ds
+
+
 def wall(factory):
     """wall: a D-shaped first wall around the plasma, as one limiter unit."""
     from imas.ids_defs import IDS_TIME_MODE_INDEPENDENT
@@ -333,14 +488,26 @@ def wall(factory):
     return w
 
 
-def summary(factory, scale: float = 1.0, n_time: int = N_TIME):
+def summary(factory, scale: float = 1.0, n_time: int = N_TIME,
+            time: Optional[float] = None):
+    """summary: the plasma current and the neutron rates (``time``: write this
+    single time instead)."""
     from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
 
     summ = factory.summary()
     summ.ids_properties.homogeneous_time = IDS_TIME_MODE_HOMOGENEOUS
-    t = np.linspace(0.0, 10.0, n_time)
+    t = np.linspace(0.0, 10.0, n_time) if time is None else np.array([time])
     summ.time = t
     summ.global_quantities.ip.value = scale * 1.0e6 * np.minimum(t / 2.0, 1.0)
+    rates = {energy: np.array([_total(rate) for rate in values])
+             for energy, values in _neutron_births(t, scale).items()}
+    dd = summ.fusion.neutron_rates.dd
+    dd.thermal.value = rates["thermal_thermal"]
+    dd.beam_thermal.value = rates["beam_thermal"]
+    dd.total.value = rates["thermal_thermal"] + rates["beam_thermal"]
+    # The tritons of D-D fusion burn with deuterons: about 1 % as many neutrons
+    summ.fusion.neutron_rates.dt.total.value = 0.01 * dd.total.value
+    summ.fusion.neutron_rates.total.value = 1.01 * dd.total.value
     return summ
 
 
@@ -360,7 +527,7 @@ def write_entry(uri: str, scale: float = 1.0, dd_version: Optional[str] = None,
                     equilibrium(factory, scale, rho_tor_norm=rho_tor_norm),
                     magnetics(factory, scale), summary(factory, scale),
                     pf_active(factory, scale), wall(factory),
-                    core_sources(factory, scale)):
+                    core_sources(factory, scale), distribution_sources(factory, scale)):
             entry.put(ids)
 
 

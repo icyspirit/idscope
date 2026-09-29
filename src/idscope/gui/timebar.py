@@ -63,10 +63,12 @@ class TimeBar(QtWidgets.QWidget):
         self._grid = grid[np.isfinite(grid)]
         with QtCore.QSignalBlocker(self.slider):
             self.slider.setRange(0, max(len(self._grid) - 1, 0))
-        if len(self._grid):
+        if len(self._grid) > 1:
             self.info.setText(
                 f"{len(self._grid)} slices, {self._grid[0]:.4g} … {self._grid[-1]:.4g} s"
             )
+        elif len(self._grid):
+            self.info.setText(f"1 slice, t = {self._grid[0]:.4g} s")
         else:
             self.info.setText("no time slices")
         self._update_enabled()
@@ -112,6 +114,6 @@ class TimeBar(QtWidgets.QWidget):
         self._emit(float(value))
 
     def _update_enabled(self) -> None:
-        has_grid = len(self._grid) > 0
+        steps = len(self._grid) > 1  # nothing to step through in a single slice
         for widget in (self.slider, self.prev_button, self.next_button):
-            widget.setEnabled(has_grid)
+            widget.setEnabled(steps)

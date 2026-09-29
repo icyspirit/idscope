@@ -42,6 +42,16 @@ def test_demo_layout(window):
     assert window.panels[6].image_selector.count() == 2
 
 
+def test_only_the_current_panel_is_framed(window):
+    from idscope.gui.style import CURRENT_PANEL_COLOR
+
+    window.set_current_panel(window.panels[2])
+    framed = [CURRENT_PANEL_COLOR in panel.styleSheet() for panel in window.panels]
+    assert framed == [i == 2 for i in range(len(window.panels))]
+    assert all("transparent" in panel.styleSheet()
+               for panel in window.panels if panel is not window.current_panel)
+
+
 def test_time_moves_profiles_and_maps(window):
     te, psi = window.panels[3], window.panels[6]
     y_before = te.curves[0].item.yData.copy()
@@ -134,7 +144,7 @@ def test_browser(window):
     assert browser.source_combo.count() == 2
     assert browser.ids_combo.findText("core_profiles") >= 0
     browser.ids_combo.setCurrentIndex(browser.ids_combo.findText("summary"))
-    assert browser.tree.topLevelItemCount() == 1  # global_quantities
+    assert browser.tree.topLevelItemCount() == 2  # global_quantities, fusion
     browser.ids_combo.setCurrentIndex(browser.ids_combo.findText("core_profiles"))
     browser.filter.setText("temperature")
     root = browser.tree.invisibleRootItem()
@@ -568,6 +578,19 @@ def test_undo_and_redo(window, data_dir):
     assert [c.width for c in window.config.columns] == [1.0, 1.0, 1.0]
 
 
+def test_templates_menu(window):
+    def submenu(menu, text):
+        return next(a.menu() for a in menu.actions() if a.text() == text)
+
+    templates = submenu(submenu(window.menuBar(), "&File"), "New from &template")
+    actions = {action.text(): action for action in templates.actions()}
+    # also by the names of the codes whose results they show
+    assert "nbi (nubdec)" in actions and "free_boundary (freegs, sonamu)" in actions
+    actions["nbi (nubdec)"].trigger()
+    assert window.config.title == "nbi"
+    assert window.undo_action.text() == "&Undo template nbi"
+
+
 def test_undo_open_new_and_template(window, config_path, tmp_path):
     window.change_layout(window.panels[0], "remove")
     saved = tmp_path / "saved.yaml"
@@ -645,3 +668,144 @@ def test_members_have_one_color_in_the_window(window):
     # a scope shown afterwards starts again from the first color
     window.new_from_template("pf_active")
     assert window.member_colors[("coil", "CS3U", None)] == 0
+
+
+@pytest.fixture(scope="module")
+def one_time(tmp_path_factory):
+    """Runs of a code for one time each, as it writes them: at 5 s, a copy of that
+    run, and at 7 s."""
+    import shutil
+
+    import imas
+
+    from idscope import demo
+
+    directory = tmp_path_factory.mktemp("one_time")
+    paths = {}
+    for time in (5.0, 7.0):
+        paths[time] = directory / f"run_{time:g}.nc"
+        with imas.DBEntry(str(paths[time]), "w") as entry:
+            factory = entry.factory
+            for ids in (demo.core_profiles(factory, time=time),
+                        demo.equilibrium(factory, time=time),
+                        demo.pf_active(factory, time=time),
+                        demo.summary(factory, time=time)):
+                entry.put(ids)
+    paths["copy"] = directory / "run_5_copy.nc"
+    shutil.copy(paths[5.0], paths["copy"])
+    return paths
+
+
+def show(make_window, sources, *panels):
+    from idscope.config import config_from_dict
+
+    config = config_from_dict({"sources": [str(s) for s in sources],
+                               "columns": [{"panels": list(panels)}]})
+    window = make_window(config)
+    window.resize(900, 250 * len(panels))
+    window.show()
+    return window
+
+
+def test_traces_at_one_time_are_bars(make_window, one_time):
+    from idscope.demo import PF_COILS
+
+    temperatures = {"title": "Central temperatures", "x_range": [100, 200], "signals": [
+        {"path": "core_profiles/profiles_1d/electrons/temperature[0]", "label": "Te(0)",
+         "scale": 1e-3},
+        {"path": "core_profiles/profiles_1d/t_i_average[0]", "label": "Ti(0)",
+         "scale": 1e-3},
+    ]}
+    coils = {"title": "Coil currents", "signals": ["pf_active/coil[:]/current/data"]}
+    window = show(make_window, [one_time[5.0]], temperatures, coils)
+    temperatures, coils = window.panels
+    # against time, a single time says nothing: bars of the values at that time
+    assert temperatures.kind == coils.kind == "profile"
+    assert temperatures._categories == ["Te(0)", "Ti(0)"]
+    te0 = window.pool.get(window.config.sources[0]).signal(
+        parse_signal_path("core_profiles/profiles_1d/electrons/temperature[0]")
+    ).values[0]
+    bars = temperatures._bars
+    np.testing.assert_allclose(bars[0].item.opts["height"], [1e-3 * te0])
+    np.testing.assert_allclose([bar.item.opts["x"][0] for bar in bars], [0.0, 1.0])
+    # labeled with the values, named on the x axis, and at the time of the data
+    assert [label.textItem.toPlainText() for label in temperatures._value_labels] == [
+        f"{1e-3 * te0:.4g}", f"{bars[1].item.opts['height'][0]:.4g}"
+    ]
+    assert temperatures.plot.getAxis("bottom").labelText == ""
+    assert "t = 5 s" in temperatures.title_item.textItem.toPlainText()
+    assert not temperatures.legend.isVisible()  # one source: the bars are named
+    assert temperatures.x_key(0) is None and temperatures._time_line is None
+    # the time range of the configuration is not the range of the bars
+    view = temperatures.plot.getViewBox()
+    assert view.autoRangeEnabled()[0]
+    QtWidgets.QApplication.processEvents()  # auto ranges are applied when painting
+    assert -2.0 < view.viewRange()[0][0] < view.viewRange()[0][1] < 3.0
+    assert coils._categories == [coil[0] for coil in PF_COILS]
+    assert len(coils._value_labels) == len(PF_COILS)
+    # the time is the time of the data, and there is nothing to step through
+    assert window.time == 5.0
+    assert window.timebar.info.text() == "1 slice, t = 5 s"
+    assert not window.timebar.slider.isEnabled()
+    assert not window.timebar.next_button.isEnabled()
+
+
+def test_sources_at_one_time_side_by_side(make_window, one_time):
+    panel = {"signals": ["pf_active/coil[:]/current/data"]}
+    window = show(make_window, [f"A={one_time[5.0]}", f"B={one_time['copy']}"], panel)
+    (coils,) = window.panels
+    assert coils.kind == "profile"
+    a, b = coils._bars
+    # the two bars of a coil around it, one color per source, and a legend for them
+    np.testing.assert_allclose(a.item.opts["x"][:2], [-0.2, 0.8])
+    np.testing.assert_allclose(b.item.opts["x"][:2], [0.2, 1.2])
+    assert a.item.opts["width"] == pytest.approx(0.4)
+    assert [label.text for _, label in coils.legend.items] == ["A", "B"]
+    assert len(coils._value_labels) == 0  # 24 bars: too many to label
+
+
+def test_time_graphs_that_say_something(make_window, one_time, data_dir):
+    ip = {"signals": ["summary/global_quantities/ip/value"]}
+    # a run of a code at one time, over a whole pulse: a point on its time
+    window = show(make_window, [data_dir / "a.nc", one_time[5.0]], ip)
+    (panel,) = window.panels
+    assert panel.kind == "trace"
+    assert panel.curves[1].item.opts["symbol"] == "o"
+    # runs at different times: the time graph shows how things changed
+    window = show(make_window, [one_time[5.0], one_time[7.0]], ip)
+    assert window.panels[0].kind == "trace"
+    # a constant (no time) stays a line across the time axis
+    r0 = {"signals": ["equilibrium/vacuum_toroidal_field/r0"]}
+    window = show(make_window, [one_time[5.0]], r0)
+    assert window.panels[0].kind == "trace"
+
+
+def test_time_space_image_at_one_time_is_the_profile(make_window, one_time):
+    te = {"title": "Te", "kind": "spacetime", "y_label": "rho",
+          "signals": ["core_profiles/profiles_1d/electrons/temperature"]}
+    window = show(make_window, [one_time[5.0]], te)
+    (panel,) = window.panels
+    assert panel.kind == "profile" and panel._image is None
+    x, y = panel.curves[0].item.getData()
+    np.testing.assert_allclose(x, np.linspace(0.0, 1.0, 51))
+    # the y axis of the image (its label too) is the x axis of the profile
+    assert panel.plot.getAxis("bottom").labelText == "rho"
+    assert "t = 5 s" in panel.title_item.textItem.toPlainText()
+    # over several times, an image again
+    window = show(make_window, [one_time[5.0], one_time[7.0]], te)
+    assert window.panels[0].kind == "spacetime"
+
+
+def test_bars_at_one_time_leave_the_time_bar_to_the_others(make_window, one_time,
+                                                             data_dir):
+    pulse = {"signals": [{"path": "summary/global_quantities/ip/value",
+                          "sources": ["A"]}]}
+    run = {"signals": [{"path": "summary/global_quantities/ip/value",
+                        "sources": ["run"]}]}
+    window = show(make_window, [f"A={data_dir / 'a.nc'}", f"run={one_time[5.0]}"],
+                  pulse, run)
+    assert [panel.kind for panel in window.panels] == ["trace", "profile"]
+    # the time bar steps through the pulse, the bars at 5 s stay as they are
+    assert window.timebar.slider.isEnabled()
+    window.set_time(2.0)
+    assert "t = 5 s" in window.panels[1].title_item.textItem.toPlainText()
