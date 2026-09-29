@@ -115,8 +115,9 @@ A template saved with File → Save as becomes a configuration that can be edite
   (`imas:hdf5?path=/data/entry`, `imas:mdsplus?...`) or HDF5 entry directories.
   Relative paths are relative to the configuration file.
 - **Pan** (the default): drag to move; right-drag scales the axes, the wheel zooms.
-  **Zoom**: drag a rectangle. **Point**: click or drag in a time trace to set the
-  time; the status bar shows the values of the current panel at that time.
+  **Zoom**: drag a rectangle. **Point**: a crosshair follows the mouse, with the
+  values of the curves under it (of the bars of an element, of an image at that
+  place) and dots where it meets them. Click or drag in a time trace to set the time.
 - The **time bar** at the bottom steps through the time slices of the profiles and
   maps (also with the keys, see below). The dashed line in time traces can be
   dragged.
