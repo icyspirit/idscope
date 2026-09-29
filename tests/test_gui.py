@@ -969,6 +969,81 @@ def test_keys_anywhere(window, qtbot):
     assert anywhere["Reload"] == "F5"  # on the toolbar
 
 
+def test_recent_sources(window, data_dir, qtbot):
+    a, b = f"A={data_dir / 'a.nc'}", f"B={data_dir / 'b.nc'}"
+    first = window.recent_sources[0]  # those of the configuration
+    for text in (a, b):
+        window.sources_edit.setText(text)
+        window.apply_sources()
+    assert window.recent_sources[:3] == [b, a, first]
+    menu = window.recent_sources_menu
+    assert [action.text() for action in menu.actions()[:3]] == [b, a, first]
+    assert menu.actions()[-1].text() == "Clear list"
+    menu.actions()[1].trigger()  # A again, and first in the list
+    assert [s.label for s in window.config.sources] == ["A"]
+    assert window.recent_sources[:2] == [a, b]
+    # Down in the Sources field shows them
+    activate(window, qtbot)
+    window.sources_edit.setFocus()
+    qtbot.keyClick(window.sources_edit, QtCore.Qt.Key.Key_Down)
+    assert menu.isVisible()
+    menu.close()
+    menu.actions()[-1].trigger()
+    assert window.recent_sources == [] and not window.recent_sources_button.isEnabled()
+
+
+def test_recent_sources_are_kept(make_window, config_path, data_dir):
+    window = make_window(load_config(config_path), config_path, persist=True)
+    window.use_sources(f"B={data_dir / 'b.nc'}")
+    window.close()
+    again = make_window(load_config(config_path), config_path, persist=True)
+    # after the sources of the configuration it shows
+    both = f"A={data_dir / 'a.nc'}, B={data_dir / 'b.nc'}"
+    assert again.recent_sources[:2] == [both, f"B={data_dir / 'b.nc'}"]
+
+
+def drop(target, *paths):
+    """Drop files on a widget, as from a file manager."""
+    mime = QtCore.QMimeData()
+    mime.setUrls([QtCore.QUrl.fromLocalFile(str(path)) for path in paths])
+    mime.setText("\n".join(str(path) for path in paths))  # as some file managers do
+    position = QtCore.QPointF(20, 20)
+    Action, Mouse = QtCore.Qt.DropAction, QtCore.Qt.MouseButton
+    enter = QtGui.QDragEnterEvent(position.toPoint(), Action.CopyAction, mime,
+                                  Mouse.LeftButton, QtCore.Qt.KeyboardModifier.NoModifier)
+    enter.ignore()
+    target.dragEnterEvent(enter)
+    if enter.isAccepted():
+        target.dropEvent(QtGui.QDropEvent(position, Action.CopyAction, mime,
+                                          Mouse.LeftButton,
+                                          QtCore.Qt.KeyboardModifier.NoModifier))
+    return enter.isAccepted()
+
+
+def test_drop_files_on_the_window(window, data_dir, tmp_path, config_path):
+    import shutil
+
+    copy = tmp_path / "a.nc"  # the same name as the first source: a#2
+    shutil.copy(data_dir / "a.nc", copy)
+    # a panel leaves files to the window, which adds them as sources
+    assert not drop(window.panels[0], copy)
+    assert drop(window, copy, data_dir / "h5")
+    labels = [spec.label for spec in window.config.sources]
+    assert labels == ["A", "B", "a", "h5"]
+    assert window.config.sources[3].uri.startswith("imas:hdf5?path=")
+    assert len(window.panels[0].curves) == 4
+    assert drop(window, copy)  # already there: nothing changes
+    assert len(window.config.sources) == 4
+    window.undo()  # a change of the sources, which can be undone
+    assert [spec.label for spec in window.config.sources] == ["A", "B"]
+    # a configuration is opened
+    other = tmp_path / "other.yaml"
+    other.write_text(config_path.read_text().replace("title: idscope demo",
+                                                     "title: other"))
+    assert drop(window, other)
+    assert window.config_path == other and window.config.title == "other"
+
+
 def test_crosshair_in_point_mode(window, make_window, data_dir):
     def hover(panel, x, y):
         view = panel.plot.getViewBox()

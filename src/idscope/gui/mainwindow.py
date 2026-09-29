@@ -26,7 +26,9 @@ from idscope.data.sources import (
     DataSource,
     SourcePool,
     format_source_list,
+    parse_source,
     parse_source_list,
+    unique_labels,
 )
 from idscope.errors import IdscopeError
 from idscope.gui.browser import BrowserWidget
@@ -157,6 +159,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.mode not in MODES:
             self.mode = "pan"
         self.recent_files: List[str] = self._read_recent_files()
+        self.recent_sources: List[str] = self._read_list("recent_sources", "sources")
         last_dir = self._setting("last_dir", "")
         self._last_dir: Optional[Path] = Path(last_dir) if last_dir else None
         self._session_timer = QtCore.QTimer(self)
@@ -168,6 +171,7 @@ class MainWindow(QtWidgets.QMainWindow):
         palette = self.palette()
         palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor("white"))
         self.setPalette(palette)
+        self.setAcceptDrops(True)  # files and entries: sources; configurations
 
         self._build_toolbar()
         self.timebar = TimeBar()
@@ -247,7 +251,20 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.sources_edit.returnPressed.connect(self.apply_sources)
         self.sources_edit.setMinimumWidth(300)
+        self.sources_edit.setAcceptDrops(False)  # files dropped on it are sources
+        self.sources_edit.installEventFilter(self)  # Down: the recent sources
         toolbar.addWidget(self.sources_edit)
+        self.recent_sources_menu = QtWidgets.QMenu(self)
+        self.recent_sources_menu.setToolTipsVisible(True)
+        self.recent_sources_button = QtWidgets.QToolButton()
+        self.recent_sources_button.setArrowType(QtCore.Qt.ArrowType.DownArrow)
+        self.recent_sources_button.setToolTip("Recent sources (Down in the field)")
+        self.recent_sources_button.setMenu(self.recent_sources_menu)
+        self.recent_sources_button.setPopupMode(
+            QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        toolbar.addWidget(self.recent_sources_button)
+        self._update_recent_sources_menu()
         apply = toolbar.addAction("Apply")
         apply.setToolTip("Load the data of these sources (Enter)")
         apply.triggered.connect(self.apply_sources)
@@ -602,6 +619,21 @@ class MainWindow(QtWidgets.QMainWindow):
         except IdscopeError as exc:
             QtWidgets.QMessageBox.warning(self, "Invalid source", str(exc))
             return
+        self._set_sources(specs)
+
+    def add_sources(self, texts: List[str]) -> None:
+        """Add sources (e.g. files dropped on the window) to those shown."""
+        try:
+            new = [parse_source(text) for text in texts]
+        except IdscopeError as exc:
+            QtWidgets.QMessageBox.warning(self, "Invalid source", str(exc))
+            return
+        known = {spec.uri for spec in self.config.sources}
+        new = [spec for spec in new if spec.uri not in known]
+        if new:
+            self._set_sources(unique_labels(self.config.sources + new))
+
+    def _set_sources(self, specs) -> None:
         self.config.sources = specs
         self.pool.keep_only(specs)
         self._show_sources()
@@ -1132,6 +1164,74 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _show_sources(self) -> None:
         self.sources_edit.setText(format_source_list(self.config.sources, self._base_dir()))
+        if self.config.sources:  # as they are, wherever the configuration is
+            text = format_source_list(self.config.sources)
+            self.recent_sources = ([text] + [t for t in self._read_list(
+                "recent_sources", "sources") if t != text])[:MAX_RECENT_FILES]
+            self._write_list("recent_sources", "sources", self.recent_sources)
+            self._update_recent_sources_menu()
+
+    def _update_recent_sources_menu(self) -> None:
+        menu = self.recent_sources_menu
+        menu.clear()
+        for text in self.recent_sources:
+            shown = text if len(text) <= 100 else f"{text[:48]}…{text[-48:]}"
+            action = menu.addAction(shown.replace("&", "&&"))
+            action.setToolTip(text)
+            action.triggered.connect(lambda checked=False, t=text: self.use_sources(t))
+        if self.recent_sources:
+            menu.addSeparator()
+            menu.addAction("Clear list").triggered.connect(self._clear_recent_sources)
+        self.recent_sources_button.setEnabled(bool(self.recent_sources))
+
+    def _clear_recent_sources(self) -> None:
+        self.recent_sources = []
+        self._write_list("recent_sources", "sources", [])
+        self._update_recent_sources_menu()
+
+    def use_sources(self, text: str) -> None:
+        """Show these sources (e.g. recent ones), as if typed and applied."""
+        self.sources_edit.setText(text)
+        self.apply_sources()
+
+    def eventFilter(self, watched, event) -> bool:
+        if (watched is self.sources_edit and event.type() == QtCore.QEvent.Type.KeyPress
+                and event.key() == QtCore.Qt.Key.Key_Down and self.recent_sources):
+            self.recent_sources_menu.popup(self.sources_edit.mapToGlobal(
+                QtCore.QPoint(0, self.sources_edit.height())
+            ))
+            return True
+        return super().eventFilter(watched, event)
+
+    # ------------------------------------------------------------ dropped files
+
+    @staticmethod
+    def _dropped_paths(mime: QtCore.QMimeData) -> List[Path]:
+        if not mime.hasUrls():
+            return []
+        return [Path(url.toLocalFile()) for url in mime.urls() if url.isLocalFile()]
+
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
+        if self._dropped_paths(event.mimeData()):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event: QtGui.QDragMoveEvent) -> None:
+        if self._dropped_paths(event.mimeData()):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QtGui.QDropEvent) -> None:
+        """Files and HDF5 entry directories dropped on the window are added as
+        sources; a configuration (.yaml) is opened."""
+        paths = self._dropped_paths(event.mimeData())
+        if not paths:
+            return
+        event.acceptProposedAction()
+        configs = [p for p in paths if p.suffix.lower() in (".yaml", ".yml")]
+        if configs:
+            self.open_file(str(configs[0]))
+        others = [str(p) for p in paths if p not in configs]
+        if others:
+            self.add_sources(others)
 
     def _dialog_dir(self) -> Path:
         """Where file dialogs start: the directory of the configuration file, else the
@@ -1149,29 +1249,38 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ----------------------------------------------------------- recent files
 
-    def _read_recent_files(self) -> List[str]:
+    def _read_list(self, name: str, key: str) -> List[str]:
+        """A list kept in the settings (recent files, recent sources), newest first;
+        without settings, the list of this window."""
         if self.settings is None:
-            return list(getattr(self, "recent_files", []))
+            return list(getattr(self, name, []))
         self.settings.sync()  # another idscope may have changed the list
-        files: List[str] = []
-        for i in range(self.settings.beginReadArray("recent_files")):
+        values: List[str] = []
+        for i in range(self.settings.beginReadArray(name)):
             self.settings.setArrayIndex(i)
-            path = self.settings.value("path")
-            if path and str(path) not in files:
-                files.append(str(path))
+            value = self.settings.value(key)
+            if value and str(value) not in values:
+                values.append(str(value))
         self.settings.endArray()
-        return files[:MAX_RECENT_FILES]
+        return values[:MAX_RECENT_FILES]
+
+    def _write_list(self, name: str, key: str, values: List[str]) -> None:
+        if self.settings is None:
+            return
+        self.settings.remove(name)
+        self.settings.beginWriteArray(name, min(len(values), MAX_RECENT_FILES))
+        for i, value in enumerate(values[:MAX_RECENT_FILES]):
+            self.settings.setArrayIndex(i)
+            self.settings.setValue(key, value)
+        self.settings.endArray()
+        self.settings.sync()
+
+    def _read_recent_files(self) -> List[str]:
+        return self._read_list("recent_files", "path")
 
     def _set_recent_files(self, files: List[str]) -> None:
         self.recent_files = files[:MAX_RECENT_FILES]
-        if self.settings is not None:
-            self.settings.remove("recent_files")
-            self.settings.beginWriteArray("recent_files", len(self.recent_files))
-            for i, path in enumerate(self.recent_files):
-                self.settings.setArrayIndex(i)
-                self.settings.setValue("path", path)
-            self.settings.endArray()
-            self.settings.sync()
+        self._write_list("recent_files", "path", self.recent_files)
         self._update_recent_menu()
 
     def _add_recent_file(self, path) -> None:
