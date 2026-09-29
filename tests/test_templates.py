@@ -169,9 +169,13 @@ def test_pf_active_template_on_one_time(template_window, solved_coils):
     currents, voltages, bars, section = window.panels
     # no voltages, no equilibrium and no wall: the coils are drawn all the same
     assert set(errors_by_panel(window)) == {"Coil voltages", "Poloidal cross-section"}
-    assert all(c.item.opts["symbol"] == "o" for c in currents.curves)  # one sample
-    np.testing.assert_allclose(bars._bars[0].item.opts["height"],
-                               [12, 15, 18, 18, 15, 12, 0, 0, 0, 0, 0, 0])
+    # at one time, the currents over time are bars of their values, as at the
+    # selected time
+    assert currents.kind == bars.kind == "profile"
+    assert currents._categories == bars._categories == COILS
+    for panel in (currents, bars):
+        np.testing.assert_allclose(panel._bars[0].item.opts["height"],
+                                   [12, 15, 18, 18, 15, 12, 0, 0, 0, 0, 0, 0])
     assert len(section._shape_labels) == len(COILS)
 
 
@@ -381,8 +385,15 @@ def test_nbi_template_on_a_beam_code_output(template_window, beam_deposition):
     fast = panels["Fast ion density"].curves[0]
     assert fast.name == "D"
     assert fast.item.getData()[1][0] == pytest.approx(1.0)
-    # the rates at the one time, as points
-    assert all(c.item.opts["symbol"] == "o" for c in panels["Neutron rates"].curves)
+    # the rates at the one time, as bars of their values
+    rates = panels["Neutron rates"]
+    assert rates.kind == "profile"
+    assert rates._categories == ["total", "D-D beam-thermal", "D-D thermal", "D-T"]
+    np.testing.assert_allclose([bar.item.opts["height"][0] for bar in rates._bars],
+                               [1.01e15, 0.9e15, 0.1e15, 1.0e13])
+    assert [label.textItem.toPlainText() for label in rates._value_labels] == [
+        "1.01e+15", "9e+14", "1e+14", "1e+13"
+    ]
 
 
 @pytest.fixture(scope="module")

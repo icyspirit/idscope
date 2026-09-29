@@ -32,7 +32,7 @@ def _set_first(node, names, value) -> None:
 
 
 def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME,
-                  rho_tor_norm: bool = True):
+                  rho_tor_norm: bool = True, time: Optional[float] = None):
     """core_profiles with homogeneous time, electrons and two ion species.
 
     The second ion species is missing in the last three time slices.
@@ -40,13 +40,16 @@ def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME,
     Args:
         rho_tor_norm: fill ``profiles_1d/grid/rho_tor_norm`` (profiles can otherwise
             be drawn against the normalized psi).
+        time: write this single time instead, like a code run for one time (with
+            both ion species).
     """
     from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
 
     cp = factory.core_profiles()
     cp.ids_properties.homogeneous_time = IDS_TIME_MODE_HOMOGENEOUS
     cp.ids_properties.comment = "idscope synthetic demo data"
-    t = np.linspace(0.0, 10.0, n_time)
+    t = np.linspace(0.0, 10.0, n_time) if time is None else np.array([time])
+    n_time = len(t)
     cp.time = t
     rho = np.linspace(0.0, 1.0, N_RHO)
     te0 = scale * _profile_scale(t)
@@ -62,7 +65,7 @@ def core_profiles(factory, scale: float = 1.0, n_time: int = N_TIME,
         p1d.electrons.temperature = te0[i] * shape + 50.0
         density = scale * 5.0e19 * (1.0 - 0.7 * rho**2) + 2.0e18
         p1d.electrons.density = density
-        n_ion = 2 if i < n_time - 3 else 1
+        n_ion = 2 if i < n_time - 3 or time is not None else 1
         p1d.ion.resize(n_ion)
         for j, ion in enumerate(p1d.ion):
             _set_first(ion, ("name", "label"), ("D", "C")[j])
@@ -485,12 +488,15 @@ def wall(factory):
     return w
 
 
-def summary(factory, scale: float = 1.0, n_time: int = N_TIME):
+def summary(factory, scale: float = 1.0, n_time: int = N_TIME,
+            time: Optional[float] = None):
+    """summary: the plasma current and the neutron rates (``time``: write this
+    single time instead)."""
     from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
 
     summ = factory.summary()
     summ.ids_properties.homogeneous_time = IDS_TIME_MODE_HOMOGENEOUS
-    t = np.linspace(0.0, 10.0, n_time)
+    t = np.linspace(0.0, 10.0, n_time) if time is None else np.array([time])
     summ.time = t
     summ.global_quantities.ip.value = scale * 1.0e6 * np.minimum(t / 2.0, 1.0)
     rates = {energy: np.array([_total(rate) for rate in values])

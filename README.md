@@ -273,6 +273,16 @@ When a panel compares several sources, curves take the color of their signal (or
 member, e.g. coil) and the line style of their source; the legend has an entry for
 each, instead of one for every combination.
 
+A graph against time says nothing of data that is all at one and the same time,
+such as what a code gives for the time it was run for. A trace panel then shows
+bars of the values at that time (a bar per signal, or per member of a signal with
+wildcards, labeled with its value when there are few), and a time-space panel the
+profiles. Data at several times keeps its time axis, also when each source has one
+time (runs of a code at different times show how things changed), and so does a
+source at one time among sources over a whole pulse: it is a point at its time.
+With a single time slice, the time bar has nothing to step through and the time is
+that of the data.
+
 ## Configuration
 
 ```yaml

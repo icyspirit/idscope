@@ -610,7 +610,13 @@ class MainWindow(QtWidgets.QMainWindow):
             grid = np.empty(0)
         grid = grid[np.isfinite(grid)]
         self.timebar.set_grid(grid)
-        if self.time is None and len(grid):
+        times = np.concatenate(slices + traces) if slices or traces else np.empty(0)
+        times = np.unique(times[np.isfinite(times)])
+        if len(times) == 1 and self.time != float(times[0]):
+            # All the data is at one time (e.g. what a code gives for the time it
+            # was run for): that is the time
+            self.set_time(float(times[0]))
+        elif self.time is None and len(grid):
             self.set_time(float(grid[len(grid) // 2]))
         else:  # e.g. the time of a configuration, which the panels were loaded at
             self.timebar.set_time(self.time)
