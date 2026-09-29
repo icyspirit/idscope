@@ -472,8 +472,15 @@ def distribution_sources(factory, scale: float = 1.0, n_markers: int = 400):
     return ds
 
 
+def _d_shape(a: float, b: float, theta: np.ndarray):
+    """(R, Z) of a D-shaped contour of the demo machine: half-width ``a``, half-height
+    ``b``, centred on R = 1.8 m."""
+    return 1.8 + a * np.cos(theta + 0.35 * np.sin(theta)), b * np.sin(theta)
+
+
 def wall(factory):
-    """wall: a D-shaped first wall around the plasma, as one limiter unit."""
+    """wall: a D-shaped first wall around the plasma, as one limiter unit, and the
+    vacuum vessel around it, as one annular unit (its inner and outer contours)."""
     from imas.ids_defs import IDS_TIME_MODE_INDEPENDENT
 
     w = factory.wall()
@@ -483,9 +490,105 @@ def wall(factory):
     unit = w.description_2d[0].limiter.unit[0]
     unit.name = "first wall"
     theta = np.linspace(0.0, 2.0 * np.pi, 121)[:-1]  # closed: the first point is not repeated
-    unit.outline.r = 1.8 + 0.72 * np.cos(theta + 0.35 * np.sin(theta))
-    unit.outline.z = 1.15 * np.sin(theta)
+    unit.outline.r, unit.outline.z = _d_shape(0.72, 1.15, theta)
+    w.description_2d[0].vessel.unit.resize(1)
+    vessel = w.description_2d[0].vessel.unit[0]
+    vessel.name = "vacuum vessel"
+    for contour, (a, b) in ((vessel.annular.outline_inner, (0.8, 1.25)),
+                            (vessel.annular.outline_outer, (0.85, 1.32))):
+        contour.r, contour.z = _d_shape(a, b, theta)
+        if hasattr(contour, "closed"):  # Data Dictionary 3
+            contour.closed = 1
     return w
+
+
+def pf_passive(factory, scale: float = 1.0, n_time: int = N_TIME):
+    """pf_passive: two stabilizing plates inside the vessel, above and below the
+    midplane on the outboard side, with the currents induced in them: by the ramp-up
+    of the plasma current, and, in opposite directions, by the plasma moving up and
+    down."""
+    from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
+
+    pf = factory.pf_passive()
+    pf.ids_properties.homogeneous_time = IDS_TIME_MODE_HOMOGENEOUS
+    t = np.linspace(0.0, 10.0, n_time)
+    pf.time = t
+    pf.loop.resize(2)
+    for loop, name, sign in zip(pf.loop, ("upper plate", "lower plate"), (1.0, -1.0)):
+        loop.name = name
+        loop.element.resize(1)
+        geometry = loop.element[0].geometry
+        geometry.geometry_type = 1  # an outline: the plate follows the wall
+        theta = sign * np.linspace(0.3, 0.8, 11)
+        inner, outer = _d_shape(0.745, 1.19, theta), _d_shape(0.775, 1.22, theta)
+        geometry.outline.r = np.concatenate([inner[0], outer[0][::-1]])
+        geometry.outline.z = np.concatenate([inner[1], outer[1][::-1]])
+        loop.element[0].turns_with_sign = 1.0
+        loop.current = scale * (-25.0e3 * np.exp(-(((t - 1.0) / 0.6) ** 2))
+                                + sign * 3.0e3 * np.sin(3.7 * t))
+    return pf
+
+
+TF_COILS = 16
+_S = np.sqrt(0.5)
+TF_CONDUCTOR = [
+    # name, type (1: line, 2: arc), start, intermediate, end, centre (R, Z) [m]
+    ("inner leg", 1, (0.9, -1.5), None, (0.9, 1.5), None),
+    ("upper inner arc", 2, (0.9, 1.5), (1.33 - 0.43 * _S, 1.5 + 0.43 * _S), (1.33, 1.93),
+     (1.33, 1.5)),
+    ("top", 1, (1.33, 1.93), None, (2.3, 1.93), None),
+    ("upper outer arc", 2, (2.3, 1.93), (2.3 + 0.83 * _S, 1.1 + 0.83 * _S), (3.13, 1.1),
+     (2.3, 1.1)),
+    ("outer leg", 1, (3.13, 1.1), None, (3.13, -1.1), None),
+    ("lower outer arc", 2, (3.13, -1.1), (2.3 + 0.83 * _S, -1.1 - 0.83 * _S), (2.3, -1.93),
+     (2.3, -1.1)),
+    ("bottom", 1, (2.3, -1.93), None, (1.33, -1.93), None),
+    ("lower inner arc", 2, (1.33, -1.93), (1.33 - 0.43 * _S, -1.5 - 0.43 * _S), (0.9, -1.5),
+     (1.33, -1.5)),
+]
+"""The center line of the conductor of a toroidal field coil of the demo machine:
+a D of straight legs and arcs, around the vessel and the PF coils."""
+
+
+def tf(factory, scale: float = 1.0, n_time: int = N_TIME):
+    """tf: the toroidal field coils (one standing for all, :data:`TF_COILS` of
+    them), their current and the vacuum field they make."""
+    from imas.ids_defs import EMPTY_FLOAT, IDS_TIME_MODE_HOMOGENEOUS
+
+    coils = factory.tf()
+    coils.ids_properties.homogeneous_time = IDS_TIME_MODE_HOMOGENEOUS
+    t = np.linspace(0.0, 10.0, n_time)
+    coils.time = t
+    coils.r0 = 1.8
+    coils.is_periodic = 1
+    coils.coils_n = TF_COILS
+    # R B_phi = mu0 N I / (2 pi), for N I of all the coils together
+    current = scale * 11.25e3 * np.ones(len(t))  # per turn, of 100 turns
+    field = 2.0e-7 * TF_COILS * 100 * current
+    vacuum = (coils.b_field_phi_vacuum_r if hasattr(coils, "b_field_phi_vacuum_r")
+              else coils.b_field_tor_vacuum_r)  # Data Dictionary 4, 3
+    vacuum.data = field
+    coils.coil.resize(1)
+    coil = coils.coil[0]
+    coil.name = "TF"
+    coil.turns = 100.0
+    coil.current.data = current
+    coil.conductor.resize(1)
+    elements = coil.conductor[0].elements
+    if hasattr(elements, "names"):  # not in every version of the Data Dictionary
+        elements.names = [name for name, *_ in TF_CONDUCTOR]
+    elements.types = np.array([kind for _, kind, *_ in TF_CONDUCTOR], dtype=np.int32)
+
+    def column(points, k):
+        return np.array([EMPTY_FLOAT if p is None else p[k] for p in points])
+
+    for name, index in (("start_points", 2), ("intermediate_points", 3),
+                        ("end_points", 4), ("centres", 5)):
+        points = [row[index] for row in TF_CONDUCTOR]
+        node = getattr(elements, name)
+        node.r, node.z = column(points, 0), column(points, 1)
+        node.phi = np.array([EMPTY_FLOAT if p is None else 0.0 for p in points])
+    return coils
 
 
 def summary(factory, scale: float = 1.0, n_time: int = N_TIME,
@@ -526,8 +629,9 @@ def write_entry(uri: str, scale: float = 1.0, dd_version: Optional[str] = None,
         for ids in (core_profiles(factory, scale, rho_tor_norm=rho_tor_norm),
                     equilibrium(factory, scale, rho_tor_norm=rho_tor_norm),
                     magnetics(factory, scale), summary(factory, scale),
-                    pf_active(factory, scale), wall(factory),
-                    core_sources(factory, scale), distribution_sources(factory, scale)):
+                    pf_active(factory, scale), wall(factory), pf_passive(factory, scale),
+                    tf(factory, scale), core_sources(factory, scale),
+                    distribution_sources(factory, scale)):
             entry.put(ids)
 
 

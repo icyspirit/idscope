@@ -14,7 +14,7 @@ from idscope.config import PanelConfig, SignalConfig
 from idscope.data import MAP, PROFILE, SHAPE, TRACE, Channels, MapSeries, ProfileSeries
 from idscope.data import Shapes, SignalData, parse_alternatives
 from idscope.data.expressions import relative_to
-from idscope.data.extract import GEOMETRY, MARKERS, POINT
+from idscope.data.extract import ANNULAR, GEOMETRY, MARKERS, POINT
 from idscope.data.sources import DataSource
 from idscope.errors import IdscopeError, NoDataError
 from idscope.gui import style
@@ -50,6 +50,8 @@ _TOP_ROOM = 44
 """Pixels above the highest labeled bar: for its value, and the title above it."""
 _BOTTOM_ROOM = 20
 """Pixels below the lowest (negative) labeled bar, for its value."""
+_MAX_CURSOR_ROWS = 10
+"""Values that the crosshair of the Point mode lists, at most."""
 _HINT = "Double-click to set up, or drop a signal from the IDS browser"
 _FONT_SIZE = 8  # points
 
@@ -198,6 +200,40 @@ def _format(value: float) -> str:
     return f"{value:.5g}" if np.isfinite(value) else "nan"
 
 
+def _round_to_view(value: float, span: float, log: bool = False) -> float:
+    """A coordinate of the mouse in a view ``span`` wide, as the value it stands for
+    (10**value on a log axis), to about a thousandth of the view: 2.2e-16 is 0."""
+    if log:
+        value = 10.0 ** value
+        step = abs(value) * np.log(10.0) * span / 1000.0  # the same, in decades
+    else:
+        step = span / 1000.0
+    if not (np.isfinite(value) and np.isfinite(step) and step > 0):
+        return value
+    step = 10.0 ** np.floor(np.log10(step))
+    return float(np.round(value / step) * step) + 0.0  # not -0
+
+
+def _value_at(xs, ys, x: float, log_x: bool, tolerance: float) -> Optional[float]:
+    """The value of a curve y(xs) at ``x`` (in the coordinates of the view: log10 of
+    x on a log axis), along its line; None away from it (more than ``tolerance``
+    beyond its ends, or anywhere for a single point farther than that)."""
+    xs, ys = np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
+    if log_x:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            xs = np.log10(xs)
+    valid = np.isfinite(xs) & np.isfinite(ys)
+    xs, ys = xs[valid], ys[valid]
+    if xs.size == 0:
+        return None
+    if xs.size > 1 and np.any(np.diff(xs) < 0):
+        order = np.argsort(xs, kind="stable")
+        xs, ys = xs[order], ys[order]
+    if not xs[0] - tolerance <= x <= xs[-1] + tolerance:
+        return None
+    return float(np.interp(x, xs, ys))
+
+
 class Panel(QtWidgets.QFrame):
     """A panel showing traces, profiles, a map or a time-space image.
 
@@ -250,6 +286,8 @@ class Panel(QtWidgets.QFrame):
         at one time, and which then shows it as it is at that time (see load)."""
         self._value_labels: List[object] = []  # values written on the bars
         self._compared = False  # sources shown relative to the first (config.relative)
+        self._cursor_items = None  # the crosshair of the Point mode, once needed
+        self._placing_cursor = False
         self._labeled_heights: List[float] = []  # heights of the bars labeled
         self._bar_room = None  # an invisible line: the room the bars take
         self._member_colors: dict = member_colors if member_colors is not None else {}
@@ -318,6 +356,7 @@ class Panel(QtWidgets.QFrame):
         scene = self.graphics.scene()
         scene.sigMouseClicked.connect(self._on_click)
         scene.sigMouseMoved.connect(self._on_move)
+        self.graphics.viewport().installEventFilter(self)  # the mouse leaving
         self.apply_config()
 
     def _style_plot(self) -> None:
@@ -498,6 +537,7 @@ class Panel(QtWidgets.QFrame):
         with QtCore.QSignalBlocker(self.image_selector):
             self.image_selector.clear()
         self.header.hide()
+        self._hide_cursor()
 
     def load(self, sources: List[DataSource], time: Optional[float]) -> List[str]:
         """Read all signals of this panel from ``sources`` and draw them.
@@ -767,7 +807,7 @@ class Panel(QtWidgets.QFrame):
         elif data.shape == MARKERS:  # often thousands: small dots, no outline
             item = pg.PlotDataItem(pen=None, symbol="o", symbolSize=3, symbolPen=None,
                                    symbolBrush=pg.mkBrush(pen.color()))
-        elif data.shape == GEOMETRY:
+        elif data.shape in (GEOMETRY, ANNULAR):  # filled (a vessel layer: its ring)
             fill = QtGui.QColor(pen.color())
             fill.setAlpha(60)
             item = pg.PlotDataItem(pen=pen, connect="finite", fillLevel="enclosed",
@@ -1126,6 +1166,7 @@ class Panel(QtWidgets.QFrame):
         for curve, t_slice in shown:
             self._set_legend_text(curve, None if common else t_slice)
         self._update_title()
+        self._refresh_cursor()
 
     def _set_legend_text(self, curve: Curve, t_slice: Optional[float]) -> None:
         if curve.label is None:
@@ -1276,6 +1317,7 @@ class Panel(QtWidgets.QFrame):
             view.setMouseEnabled(x=True, y=True)
             view.setMouseMode(pg.ViewBox.RectMode if mode == "zoom" else pg.ViewBox.PanMode)
             self.graphics.unsetCursor()
+            self._hide_cursor()
 
     def _on_click(self, event) -> None:
         self.activated.emit(self)
@@ -1293,6 +1335,7 @@ class Panel(QtWidgets.QFrame):
     def _on_move(self, scene_pos) -> None:
         view = self.plot.getViewBox()
         if not view.sceneBoundingRect().contains(scene_pos):
+            self._hide_cursor()
             return
         position = view.mapSceneToView(scene_pos)
         x, y = position.x(), position.y()
@@ -1300,10 +1343,157 @@ class Panel(QtWidgets.QFrame):
             buttons = QtWidgets.QApplication.mouseButtons()
             if buttons & QtCore.Qt.MouseButton.LeftButton:
                 self.timeRequested.emit(float(x))
+        if self._mode == "point" and self.curves:
+            self._show_cursor(x, y)
         self.hoverMessage.emit(self._describe_position(x, y))
 
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QtCore.QEvent.Type.Leave:
+            self._hide_cursor()
+        return super().eventFilter(watched, event)
+
+    # ------------------------------------------------------------- crosshair
+
+    def _cursor(self):
+        """The crosshair of the Point mode: two lines, dots on the curves and a label
+        of their values (made when first needed)."""
+        if self._cursor_items is None:
+            pen = pg.mkPen(style.CURSOR_COLOR, width=1, style=QtCore.Qt.PenStyle.DotLine)
+            lines = [pg.InfiniteLine(angle=angle, pen=pen, movable=False)
+                     for angle in (90, 0)]
+            dots = pg.ScatterPlotItem(size=7, pen=pg.mkPen("w", width=1))
+            label = pg.TextItem(color="k", anchor=(0, 1), border=pg.mkPen("#b0b0b0"),
+                                fill=pg.mkBrush("w"))
+            font = QtGui.QFont()
+            font.setPointSize(_FONT_SIZE)
+            label.setFont(font)
+            for z, item in enumerate(lines + [dots]):
+                item.setZValue(40 + z)
+                item.hide()
+                self.plot.addItem(item, ignoreBounds=True)
+            # The label is placed in pixels, over the legend and the title (which are
+            # not in the coordinates of the view either)
+            label.hide()
+            label.setParentItem(self.plot.getViewBox())
+            label.setZValue(110)
+            self._cursor_items = (lines, dots, label)
+            self.plot.getViewBox().sigTransformChanged.connect(
+                lambda view: self._refresh_cursor())
+        return self._cursor_items
+
+    def _hide_cursor(self) -> None:
+        if self._cursor_items is not None:
+            lines, dots, label = self._cursor_items
+            for item in (*lines, dots, label):
+                item.hide()
+
+    def _refresh_cursor(self) -> None:
+        """The crosshair again where it is, with the values of the data now shown
+        (after the time changed, e.g. with the keys) and its label where the view
+        now shows that place."""
+        if (self._cursor_items is not None and self._cursor_items[0][0].isVisible()
+                and not self._placing_cursor):
+            lines = self._cursor_items[0]
+            self._show_cursor(lines[0].value(), lines[1].value())
+
+    def _show_cursor(self, x: float, y: float) -> None:
+        """The crosshair at (x, y), in the coordinates of the view, with the values of
+        the curves there (of the bars of the element, or of the image)."""
+        lines, dots, label = self._cursor()
+        header, rows, points = self._values_at(x, y)
+        lines[0].setValue(x)
+        lines[1].setValue(y)
+        dots.setData([p[0] for p in points], [p[1] for p in points],
+                     brush=[pg.mkBrush(p[2]) for p in points])
+        text = [f"<b>{html.escape(header)}</b>"] if header else []
+        for color, name, value in rows[:_MAX_CURSOR_ROWS]:
+            mark = f"<span style='color: {color}'>&#9632;</span> " if color else ""
+            text.append(f"{mark}{html.escape(name)} = {_format(value)}")
+        if len(rows) > _MAX_CURSOR_ROWS:
+            text.append(f"… {len(rows) - _MAX_CURSOR_ROWS} more")
+        label.setHtml("<br>".join(text))
+        for item in (*lines, dots, label):
+            item.setVisible(item is not label or bool(text))
+        # Beside the cursor, on the side with more room, and within the plot (once
+        # visible: a hidden text item does not update its size)
+        view = self.plot.getViewBox()
+        self._placing_cursor = True  # mapping may update the view, and call back
+        try:
+            point = view.mapFromView(QtCore.QPointF(x, y))  # pixels, y down
+        finally:
+            self._placing_cursor = False
+        bounds = view.boundingRect()
+        label.setAnchor((1.05 if point.x() > bounds.center().x() else -0.05,
+                         -0.05 if point.y() < bounds.center().y() else 1.05))
+        label.setPos(point)
+        label.updateTransform(force=True)
+        rect = label.mapRectToParent(label.boundingRect())
+        dx = max(bounds.left() - rect.left(), 0.0) - max(rect.right() - bounds.right(), 0.0)
+        dy = max(bounds.top() - rect.top(), 0.0) - max(rect.bottom() - bounds.bottom(), 0.0)
+        if dx or dy:
+            label.setPos(point + QtCore.QPointF(dx, dy))
+
+    def _values_at(self, x: float, y: float):
+        """What the crosshair says at (x, y): ``(header, [(color, name, value)],
+        [(x, y, color) of the dots on the curves])``."""
+        axes = self._axes()
+        (x0, x1), (y0, y1) = self.plot.getViewBox().viewRange()
+        x_shown = _round_to_view(x, x1 - x0, axes.log_x)
+        y_shown = _round_to_view(y, y1 - y0, axes.log_y)
+        if self.kind in ("map", "spacetime"):
+            header = (f"{self._axis_name('bottom', 'x')} = {_format(x_shown)}, "
+                      f"{self._axis_name('left', 'y')} = {_format(y_shown)}")
+            shown = self._selected_image()
+            if self._image_grid is None or shown is None:
+                return header, [], []
+            x1, x2, z = self._image_grid
+            if not (len(x1) and len(x2)):
+                return header, [], []
+            i, j = int(np.argmin(np.abs(x1 - x))), int(np.argmin(np.abs(x2 - y)))
+            return header, [(None, shown.name, float(z[i, j]))], []
+        if self._bars:
+            index = int(round(x))
+            if not 0 <= index < len(self._categories):
+                return "", [], []
+            category = self._categories[index]
+            rows = []
+            for curve in self._bars:
+                if category in curve.data.names:
+                    values, _ = curve.data.values_at(self._time)
+                    value = curve.scaled(values)[curve.data.names.index(category)]
+                    color = curve.item.opts["brush"]
+                    rows.append((pg.mkBrush(color).color().name(), curve.name, value))
+            return category, rows, []
+        tolerance = 0.01 * abs(x1 - x0)
+        header = (f"t = {_format(x_shown)} s" if self.kind == "trace" else
+                  f"{self._axis_name('bottom', 'x')} = {_format(x_shown)}")
+        rows, points = [], []
+        for curve in self.curves:
+            item = curve.item
+            if isinstance(item, pg.InfiniteLine):  # a constant
+                rows.append((item.pen.color().name(), curve.name, float(item.value())))
+                continue
+            if not isinstance(item, pg.PlotDataItem) or item.xData is None:
+                continue
+            value = _value_at(item.xData, item.yData, x, axes.log_x, tolerance)
+            if value is None:
+                continue
+            pen = item.opts["pen"]
+            color = pg.mkPen(pen).color().name() if pen is not None else "#000000"
+            rows.append((color, curve.name, value))
+            if axes.log_y and value <= 0:
+                continue
+            points.append((x, np.log10(value) if axes.log_y else value, color))
+        return header, rows, points
+
+    def _axis_name(self, name: str, default: str) -> str:
+        return self.plot.getAxis(name).labelText.strip() or default
+
     def _describe_position(self, x: float, y: float) -> str:
-        text = f"x = {_format(x)}, y = {_format(y)}"
+        axes = self._axes()
+        (x0, x1), (y0, y1) = self.plot.getViewBox().viewRange()
+        text = (f"x = {_format(_round_to_view(x, x1 - x0, axes.log_x))}, "
+                f"y = {_format(_round_to_view(y, y1 - y0, axes.log_y))}")
         if self._image_grid is not None:
             x1, x2, z = self._image_grid
             if len(x1) and len(x2):

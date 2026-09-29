@@ -8,7 +8,8 @@ from idscope.templates import ALIASES, aliases_of, load_template, template_names
 
 def test_template_names():
     assert template_names() == [
-        "core_profiles", "core_sources", "equilibrium", "free_boundary", "nbi", "pf_active"
+        "core_profiles", "core_sources", "device", "equilibrium", "free_boundary", "nbi",
+        "pf_active",
     ]
 
 
@@ -17,6 +18,7 @@ def test_template_aliases():
     assert set(ALIASES.values()) <= set(template_names())
     assert aliases_of("nbi") == ["nubdec"]
     assert aliases_of("free_boundary") == ["freegs", "sonamu"]
+    assert aliases_of("device") == ["autofrd"]
     assert aliases_of("equilibrium") == []
     assert load_template("nubdec").title == "nbi"
     assert load_template("SONAMU").title == "free_boundary"  # in any case
@@ -445,3 +447,122 @@ def test_free_boundary_template_on_demo_data(template_window, data_dir):
     assert x_points.data.path.text == "equilibrium/time_slice/contour_tree/node[1:]"
     np.testing.assert_allclose(np.ravel(x_points.item.getData()),
                                [1.8 + 0.03 * np.sin(5.0) - 0.15, -0.8])
+
+
+@pytest.fixture(scope="module")
+def machine_description(tmp_path_factory):
+    """What autofrd writes (through tbd-fusion) for a reactor it drew, in Data
+    Dictionary 3.39.0: the solenoid and the PF coils as rectangles of one turn and
+    no current, a part of the TF coil as a passive loop, the vessel as an annular
+    unit and the blanket and a port as limiter units, and the TF coil as the center
+    line of its conductor. No time base anywhere."""
+    import imas
+    from imas.ids_defs import EMPTY_FLOAT
+
+    path = tmp_path_factory.mktemp("autofrd") / "reactor.nc"
+    factory = imas.IDSFactory("3.39.0")
+
+    def rectangle(element, r, z, width, height):
+        element.turns_with_sign = 1.0
+        element.geometry.geometry_type = 2
+        box = element.geometry.rectangle
+        box.r, box.z, box.width, box.height = r, z, width, height
+
+    pf = factory.pf_active()
+    pf.ids_properties.homogeneous_time = 1
+    pf.time = [0.0]
+    boxes = [(f"OH {k + 1}", 0.5, -1.2 + 0.8 * k + 0.4, 0.2, 0.8) for k in range(3)]
+    boxes += [("PF 1", 1.2, 1.9, 0.3, 0.3), ("PF 2", 2.8, 1.0, 0.3, 0.3),
+              ("PF 3", 2.8, -1.0, 0.3, 0.3), ("PF 4", 1.2, -1.9, 0.3, 0.3)]
+    pf.coil.resize(len(boxes))
+    for coil, (name, *box) in zip(pf.coil, boxes):
+        coil.name = name
+        coil.element.resize(1)
+        rectangle(coil.element[0], *box)
+
+    passive = factory.pf_passive()
+    passive.ids_properties.homogeneous_time = 1
+    passive.loop.resize(1)
+    passive.loop[0].name = "TF_2"
+    passive.loop[0].element.resize(1)
+    rectangle(passive.loop[0].element[0], 0.7, 0.0, 0.05, 2.4)
+
+    wall = factory.wall()
+    wall.ids_properties.homogeneous_time = 2
+    wall.description_2d.resize(1)
+    drawing = wall.description_2d[0]
+    theta = np.linspace(0.0, 2.0 * np.pi, 73)[:-1]
+    drawing.vessel.unit.resize(1)
+    drawing.vessel.unit[0].name = "VV"
+    for contour, (a, b) in ((drawing.vessel.unit[0].annular.outline_inner, (0.9, 1.4)),
+                            (drawing.vessel.unit[0].annular.outline_outer, (1.0, 1.5))):
+        contour.r, contour.z = 1.8 + a * np.cos(theta), b * np.sin(theta)
+    drawing.limiter.unit.resize(2)
+    blanket, port = drawing.limiter.unit
+    blanket.name, blanket.closed = "Blanket", 1
+    blanket.outline.r, blanket.outline.z = 1.8 + 0.8 * np.cos(theta), 1.3 * np.sin(theta)
+    port.name, port.closed = "Port_E_array", 1
+    port.outline.r, port.outline.z = [2.7, 3.3, 3.3, 2.7], [-0.2, -0.2, 0.2, 0.2]
+    port.phi_extensions = [[0.0, np.pi / 2], [0.3, 0.3]]
+
+    tf = factory.tf()
+    tf.ids_properties.homogeneous_time = 2
+    tf.is_periodic, tf.coils_n = 1, 16
+    tf.coil.resize(1)
+    tf.coil[0].name = tf.coil[0].identifier = "TF"
+    tf.coil[0].conductor.resize(1)
+    elements = tf.coil[0].conductor[0].elements
+    # a D: the inner leg, and an arc of radius 1.4 about (0.75, 0) for the rest,
+    # through the outboard midplane
+    elements.names = ["inner leg", "outer arc"]
+    elements.types = np.array([1, 2], dtype=np.int32)
+    empty = float(EMPTY_FLOAT)  # what autofrd writes where a point does not apply
+    for node, points in (
+            (elements.start_points, [(0.75, -1.4), (0.75, 1.4)]),
+            (elements.intermediate_points, [(empty, empty), (0.75 + 1.4, 0.0)]),
+            (elements.end_points, [(0.75, 1.4), (0.75, -1.4)]),
+            (elements.centres, [(empty, empty), (0.75, 0.0)])):
+        node.r = [p[0] for p in points]
+        node.z = [p[1] for p in points]
+        node.phi = [empty if p[0] == empty else 0.0 for p in points]
+    with imas.DBEntry(str(path), "w", dd_version="3.39.0") as entry:
+        for ids in (pf, passive, wall, tf):
+            entry.put(ids)
+    return path
+
+
+def test_device_template_on_a_machine_description(template_window, machine_description):
+    window = template_window("autofrd", [machine_description])
+    section, coils, passive, tf_current, field = window.panels
+    labels = [label.text for _, label in section.legend.items]
+    assert labels == ["vessel", "wall", "passive", "coils", "TF coil"]
+    shapes = {c.label: c for c in section.curves}
+    assert shapes["wall"].data.names == ["Blanket", "Port_E_array"]
+    assert shapes["coils"].data.names[:4] == ["OH 1", "OH 2", "OH 3", "PF 1"]
+    assert shapes["passive"].data.names == ["TF_2"]
+    x, y = shapes["TF coil"].item.getData()
+    assert shapes["TF coil"].data.names == ["TF"]
+    np.testing.assert_allclose([np.nanmin(x), np.nanmax(x), np.nanmin(y), np.nanmax(y)],
+                               [0.75, 2.15, -1.4, 1.4])
+    # the ring of the vessel is filled
+    assert shapes["vessel"].item.opts["fillLevel"] == "enclosed"
+    # The machine description has no currents: noted, not errors
+    assert not any(panel.errors for panel in window.panels)
+    assert set(errors_by_panel(window)) == {"Coil currents", "Passive currents",
+                                            "TF coil current", "Vacuum toroidal field"}
+    assert "not filled" in coils.notes[0]
+
+
+def test_device_template_on_demo_data(template_window, data_dir):
+    window = template_window("device", [data_dir / "a.nc", data_dir / "b.nc"])
+    window.set_time(1.0)
+    section, coils, passive, tf_current, field = window.panels
+    assert errors_by_panel(window) == {}
+    assert passive._categories == ["upper plate", "lower plate"]
+    heights = passive._bars[0].item.opts["height"]
+    assert heights[0] < -20 and heights[1] < -20  # kA, induced by the ramp-up
+    # two sources: a line style each, the same color for a kind of shape
+    tf_lines = [c for c in section.curves if c.label == "TF coil"]
+    assert len(tf_lines) == 2
+    pens = [c.item.opts["pen"] for c in tf_lines]
+    assert pens[0].color() == pens[1].color() and pens[0].style() != pens[1].style()

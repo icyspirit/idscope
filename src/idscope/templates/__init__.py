@@ -20,6 +20,7 @@ ALIASES = {
     "nubdec": "nbi",
     "sonamu": "free_boundary",
     "freegs": "free_boundary",
+    "autofrd": "device",
 }
 """Other names of templates: codes whose results they show (e.g. in tbd-fusion)."""
 
