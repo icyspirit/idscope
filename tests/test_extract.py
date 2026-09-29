@@ -448,3 +448,41 @@ def test_geometry_types():
                                1.0)
     arcs.curvature_radii = [-1.0, 0.0, 0.0, 0.0]  # into the square
     assert np.all(geometry_outline(geometry)[1:16, 1] > 0)
+
+
+@pytest.fixture(scope="module")
+def two_beams(tmp_path_factory):
+    """Two core sources with the same identifier, on grids of different lengths."""
+    import imas
+
+    path = tmp_path_factory.mktemp("beams") / "beams.nc"
+    with imas.DBEntry(str(path), "w") as entry:
+        ids = entry.factory.core_sources()
+        ids.ids_properties.homogeneous_time = 1
+        ids.time = [1.0]
+        ids.source.resize(2)
+        for k, source in enumerate(ids.source):
+            source.identifier.name = "nbi"
+            source.identifier.index = 2
+            source.profiles_1d.resize(1)
+            profiles = source.profiles_1d[0]
+            profiles.time = 1.0
+            rho = np.linspace(0.0, 1.0, 11 + 10 * k)
+            profiles.grid.rho_tor_norm = rho
+            profiles.grid.psi = 2.0 * rho**2
+            profiles.electrons.energy = (k + 1) * (1.0 - rho**2)
+        entry.put(ids)
+    source = DataSource(parse_source(str(path)))
+    yield source
+    source.close()
+
+
+def test_elements_with_the_same_name(two_beams):
+    energy = "core_sources/source[:]/profiles_1d/electrons/energy"
+    data = two_beams.signal(parse_signal_path(energy))
+    assert data.names == ["nbi", "nbi#2"]
+    # each has its own x values, also when they are given by a path
+    psi_n = parse_signal_path("norm(core_sources/source[:]/profiles_1d/grid/psi)")
+    data = two_beams.signal(parse_signal_path(energy), psi_n)
+    assert [len(member.xs[0]) for member in data.members] == [11, 21]
+    np.testing.assert_allclose(data.members[1].xs[0], np.linspace(0.0, 1.0, 21) ** 2)

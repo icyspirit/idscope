@@ -174,7 +174,9 @@ equilibrium/time_slice/global_quantities/magnetic_axis   the magnetic axis, a po
   for some of them (Fortran ranges `(a:b)` include both ends). A path with wildcards
   has a member per element, named after its `name` (or `label`, `identifier`): a
   curve per coil in time traces, a bar per coil at the selected time in a profile
-  panel. Wildcards can be nested (`coil[:]/element[:]`).
+  panel. Elements with the same name are told apart as `nbi`, `nbi#2`, and a member
+  has the same color in all the panels of the window. Wildcards can be nested
+  (`coil[:]/element[:]`).
 - An index applies to the node it is written on. On the data node it selects numpy
   style along the dimensions of the data, for every element of the wildcards: so
   `coil[:]/current/data[2]` is the third current sample of every coil (a bar per

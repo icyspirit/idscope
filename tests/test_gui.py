@@ -492,3 +492,21 @@ def test_browser_when_filled_quantities_cannot_be_listed(old_access_layer, windo
     window.reload()
     assert "found by reading" not in browser.status.text()
     assert browser.status.toolTip() == ""
+
+
+def test_members_have_one_color_in_the_window(window):
+    window.change_layout(window.panels[2], "add_below")
+    loops = window.current_panel
+    loops.add_signal("magnetics/flux_loop[:]/flux/data")
+    window.change_layout(loops, "add_below")
+    some = window.current_panel
+    some.add_signal("magnetics/flux_loop[1:]/flux/data")  # without FL1
+
+    def colors(panel):
+        return {c.name: c.item.opts["pen"].color().name() for c in panel.curves}
+
+    all_loops = colors(loops)
+    assert colors(some) == {name: all_loops[name] for name in colors(some)}
+    # a scope shown afterwards starts again from the first color
+    window.new_from_template("pf_active")
+    assert window.member_colors[("coil", "CS3U", None)] == 0
