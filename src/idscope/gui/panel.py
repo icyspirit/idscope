@@ -2,6 +2,7 @@
 
 import html
 import logging
+import re
 from typing import List, NamedTuple, Optional, Tuple
 
 import contourpy
@@ -12,10 +13,11 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from idscope.config import PanelConfig, SignalConfig
 from idscope.data import MAP, PROFILE, SHAPE, TRACE, Channels, MapSeries, ProfileSeries
 from idscope.data import Shapes, SignalData, parse_alternatives
-from idscope.data.extract import GEOMETRY, MARKERS, POINT
+from idscope.data.extract import GEOMETRY, MARKERS, POINT, MeshSeries
 from idscope.data.sources import DataSource
 from idscope.errors import IdscopeError, NoDataError
 from idscope.gui import style
+from idscope.gui.mesh import MeshItem
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +27,7 @@ MIME_SIGNAL = "application/x-idscope-signal"
 LEFT_AXIS_WIDTH = 52
 """Width of the y tick labels (the axis label comes on top). The same for all panels
 so that the plots of a column line up."""
-COLORBAR_WIDTH = 64
+COLORBAR_WIDTH = 72
 """Fixed width of color bars."""
 COLORBAR_GAP = 4
 """Gap between a plot and its color bar."""
@@ -178,6 +180,11 @@ def _mark_single_point(item, x, y) -> None:
         item.setSymbolSize(6)
         item.setSymbolBrush(color)
         item.setSymbolPen(color)
+
+
+def _compact_exponent(text: str) -> str:
+    """``2e+19`` as ``2e19`` and ``1e-05`` as ``1e-5``."""
+    return re.sub(r"e\+?(-?)0*(\d)", r"e\1\2", text)
 
 
 def _format(value: float) -> str:
@@ -885,7 +892,7 @@ class Panel(QtWidgets.QFrame):
         """Fill the image selector, keeping the image ``shown`` before a reload."""
         self._image_curves = [
             curve for curve in self.curves
-            if self.kind == "spacetime" or isinstance(curve.data, MapSeries)
+            if self.kind == "spacetime" or isinstance(curve.data, (MapSeries, MeshSeries))
         ]
         with QtCore.QSignalBlocker(self.image_selector):
             for curve in self._image_curves:
@@ -921,9 +928,13 @@ class Panel(QtWidgets.QFrame):
         if curve is None:
             self._image_time = None
             return
-        data: MapSeries = curve.data
-        x1, x2, z, t = data.at(self._time)
-        self._set_image(x1, x2, curve.scaled(z))
+        data = curve.data
+        if isinstance(data, MeshSeries):
+            mesh, values, t = data.at(self._time)
+            self._set_mesh(mesh, curve.scaled(values))
+        else:
+            x1, x2, z, t = data.at(self._time)
+            self._set_image(x1, x2, curve.scaled(z))
         self._image_time = t
 
     def _draw_spacetime(self) -> None:
@@ -953,6 +964,41 @@ class Panel(QtWidgets.QFrame):
             self._draw_image(x1, x2, z, levels)
         self._image_grid = (x1, x2, z)
         self._update_colorbar_label()  # the color bar may be new
+
+    def _set_mesh(self, mesh, values: np.ndarray) -> None:
+        """Show the value of every cell of an unstructured grid, as filled cells
+        (also when ``contours`` is set)."""
+        if mesh is None or not len(values):
+            self._remove_image()
+            return
+        finite = values[np.isfinite(values)]
+        levels = (float(finite.min()), float(finite.max())) if finite.size else (0.0, 1.0)
+        if levels[0] == levels[1]:
+            levels = (levels[0] - 0.5, levels[1] + 0.5)
+        if not isinstance(self._image, MeshItem):
+            self._remove_image()  # another image type, or contour lines
+            self._image = MeshItem(pg.colormap.get(style.COLORMAP))
+            self.plot.addItem(self._image)
+        self._image.setData(mesh, values, levels)
+        if self._colorbar is None:
+            self._colorbar = pg.ColorBarItem(
+                colorMap=pg.colormap.get(style.COLORMAP), interactive=True, width=10,
+            )
+            self._colorbar.setImageItem(self._image, insert_in=self.plot)
+            self._fit_colorbar()
+        self._colorbar.setLevels(levels)
+        self._update_colorbar_label()  # the color bar may be new
+
+    def _image_value_at(self, x: float, y: float) -> Optional[float]:
+        """The value of the image shown at (x, y): of the grid point closest to it,
+        or of the cell it is in."""
+        if isinstance(self._image, MeshItem):
+            return self._image.value_at(x, y)
+        if self._image_grid is not None:
+            x1, x2, z = self._image_grid
+            if len(x1) and len(x2):
+                return float(z[int(np.argmin(np.abs(x1 - x))), int(np.argmin(np.abs(x2 - y)))])
+        return None
 
     def _draw_image(self, x1, x2, z, levels) -> None:
         uniform = _is_uniform(x1) and _is_uniform(x2)
@@ -1015,9 +1061,12 @@ class Panel(QtWidgets.QFrame):
         self._colorbar.setFixedWidth(COLORBAR_WIDTH)
         # The color bar goes in column 5 of the plot layout, after a gap column
         self.plot.layout.setColumnFixedWidth(4, COLORBAR_GAP)
-        self._colorbar.getAxis("right").setStyle(
-            tickFont=self.plot.getAxis("left").style["tickFont"]
-        )
+        axis = self._colorbar.getAxis("right")
+        axis.setStyle(tickFont=self.plot.getAxis("left").style["tickFont"], maxTickLevel=0)
+        # Values such as densities (2e+19) fit its width as 2e19
+        default = type(axis).tickStrings
+        axis.tickStrings = lambda values, scale, spacing: [
+            _compact_exponent(text) for text in default(axis, values, scale, spacing)]
 
     def _remove_contours(self) -> None:
         for item in self._contours:
@@ -1252,12 +1301,9 @@ class Panel(QtWidgets.QFrame):
 
     def _describe_position(self, x: float, y: float) -> str:
         text = f"x = {_format(x)}, y = {_format(y)}"
-        if self._image_grid is not None:
-            x1, x2, z = self._image_grid
-            if len(x1) and len(x2):
-                i = int(np.argmin(np.abs(x1 - x)))
-                j = int(np.argmin(np.abs(x2 - y)))
-                text += f", value = {_format(z[i, j])}"
+        value = self._image_value_at(x, y)
+        if value is not None:
+            text += f", value = {_format(value)}"
         return text
 
     # ------------------------------------------------------------ context menu

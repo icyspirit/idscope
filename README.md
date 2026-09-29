@@ -269,8 +269,16 @@ distribution_sources/source[:]/ggd/particles[0]/values   a map per source, on a 
   browser lists them as *shape*.
 - The `values` of a GGD quantity on a structured grid (grid identifier
   `structured_spaces`: two spaces of one dimension, e.g. R and Z) are a map, on the
-  nodes of the grid (the first space running fastest) or on its cells. Values on
-  other grids are drawn along their index.
+  nodes of the grid (the first space running fastest) or on its cells.
+- On an unstructured grid (one space whose nodes are in R and Z, with 2D cells, as
+  edge codes such as SOLPS write them: `edge_profiles/ggd/electrons/temperature[0]/values`),
+  they are a map of its cells, each filled with the color of its value. Values on the
+  nodes give each cell the mean of its nodes. The grid is that of the GGD, or, in IDSs
+  such as edge_profiles, the one of `grid_ggd` at the time of the values; the grid
+  subset of the values says what they are on, from its elements or, for all the
+  nodes and all the cells, from its identifier. Grids read from a netCDF file are
+  read at once, which takes a fraction of a second for tens of thousands of cells.
+  Values on other grids or subsets (e.g. edges) are drawn along their index.
 - The x axis and the time come from the Data Dictionary coordinates, for homogeneous
   and heterogeneous time alike. Another x can be chosen per signal (`x:` in the
   configuration, *X path* in the setup dialog), e.g. `core_profiles/profiles_1d/grid/psi`.
@@ -296,7 +304,7 @@ names; this is noted in the log. `--dd-version` selects the version to use.
 |---|---|---|
 | `trace` | y(t) | scalars in a time array of structures, arrays along a time coordinate |
 | `profile` | y(x), at the current time for profiles in a time array of structures, or a bar per element | 1D quantities; values of paths with wildcards |
-| `map` | z(x1, x2), at the current time for maps in a time array of structures, with shapes over it | 2D quantities, e.g. `profiles_2d[0]/psi`; values of a GGD on a structured grid; shapes in (R, Z) |
+| `map` | z(x1, x2), at the current time for maps in a time array of structures, with shapes over it | 2D quantities, e.g. `profiles_2d[0]/psi`; values of a GGD on a structured grid, or on the cells or nodes of an unstructured one; shapes in (R, Z) |
 | `spacetime` | a profile as an image z(t, x) | 1D quantities in a time array of structures |
 
 `auto` (the default) picks the kind from the first signal; a value per element of a

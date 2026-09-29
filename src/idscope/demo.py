@@ -357,13 +357,7 @@ def structured_grid(grid, axes) -> None:
     grid.identifier.index = identifiers.ggd_identifier["structured_spaces"].index
     grid.space.resize(len(axes))
     for space, (coordinate, points) in zip(grid.space, axes):
-        member = identifiers.coordinate_identifier[coordinate]
-        if space.coordinates_type.metadata.data_type.name == "STRUCT_ARRAY":  # DD 4
-            space.coordinates_type.resize(1)
-            space.coordinates_type[0].name = member.name
-            space.coordinates_type[0].index = member.index
-        else:  # Data Dictionary 3: the indices of the coordinates
-            space.coordinates_type = np.array([member.index], dtype=np.int32)
+        _coordinates(space, (coordinate,))
         space.objects_per_dimension.resize(1)
         nodes = space.objects_per_dimension[0]
         nodes.object.resize(len(points))
@@ -372,6 +366,118 @@ def structured_grid(grid, axes) -> None:
     grid.grid_subset.resize(1)
     grid.grid_subset[0].identifier.name = "nodes"
     grid.grid_subset[0].identifier.index = identifiers.ggd_subset_identifier["nodes"].index
+
+
+def _coordinates(space, names) -> None:
+    """The coordinates of a GGD space, e.g. ("r", "z"): identifiers in DD 4, their
+    indices in DD 3."""
+    from imas.ids_identifiers import identifiers
+
+    members = [identifiers.coordinate_identifier[name] for name in names]
+    if space.coordinates_type.metadata.data_type.name == "STRUCT_ARRAY":  # DD 4
+        space.coordinates_type.resize(len(members))
+        for kind, member in zip(space.coordinates_type, members):
+            kind.name, kind.index = member.name, member.index
+    else:
+        space.coordinates_type = np.array([m.index for m in members], dtype=np.int32)
+
+
+EDGE_TIMES = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
+EDGE_GRID = (96, 12)
+"""Cells of the edge grid of the demo: around the plasma, and across the edge."""
+
+
+def unstructured_grid(grid, n_theta: int = EDGE_GRID[0], n_radial: int = EDGE_GRID[1]):
+    """Write an unstructured GGD grid of quadrilateral cells in a ring around the
+    plasma, from its boundary out to the first wall: one space in (R, Z), its nodes
+    and its 2D cells (the nodes of each in order around it). The grid subset of the
+    nodes is declared implicitly, that of the cells element by element.
+
+    Returns the (R, Z) of the nodes, ``n_theta`` per ring from the inner ring out.
+    """
+    from imas.ids_identifiers import identifiers
+
+    grid.identifier.name = "linear"
+    grid.identifier.index = identifiers.ggd_identifier["linear"].index
+    grid.space.resize(1)
+    space = grid.space[0]
+    _coordinates(space, ("r", "z"))
+    space.objects_per_dimension.resize(3)  # nodes, (edges), cells
+    theta = np.linspace(0.0, 2.0 * np.pi, n_theta + 1)[:-1]
+    # From the plasma boundary (a = 0.5 m, elongation 1.6, triangularity 0.3) to
+    # the first wall
+    rings = [(1.8 + (0.5 + 0.22 * f) * np.cos(theta + (0.3 + 0.05 * f) * np.sin(theta)),
+              (0.8 + 0.35 * f) * np.sin(theta)) for f in np.linspace(0.0, 1.0, n_radial + 1)]
+    points = np.array([(r, z) for ring in rings for r, z in zip(*ring)])
+    nodes = space.objects_per_dimension[0].object
+    nodes.resize(len(points))
+    for node, point in zip(nodes, points):
+        node.geometry = point
+    cells = space.objects_per_dimension[2].object
+    cells.resize(n_theta * n_radial)
+    for k, cell in enumerate(cells):
+        ring, j = divmod(k, n_theta)
+        corners = [ring * n_theta + j, ring * n_theta + (j + 1) % n_theta]
+        corners += [corner + n_theta for corner in corners[::-1]]
+        cell.nodes = np.array(corners, dtype=np.int32) + 1  # Fortran indices
+    grid.grid_subset.resize(2)
+    grid.grid_subset[0].identifier.name = "nodes"
+    grid.grid_subset[0].identifier.index = identifiers.ggd_subset_identifier["nodes"].index
+    grid.grid_subset[0].dimension = 1
+    cells_subset = grid.grid_subset[1]
+    cells_subset.identifier.name = "cells"
+    cells_subset.identifier.index = identifiers.ggd_subset_identifier["cells"].index
+    cells_subset.dimension = 3  # 2D objects of a space in the plane
+    cells_subset.element.resize(len(cells))
+    for k, element in enumerate(cells_subset.element):
+        element.object.resize(1)
+        element.object[0].space, element.object[0].dimension = 1, 3
+        element.object[0].index = k + 1
+    return points
+
+
+def edge_profiles(factory, scale: float = 1.0):
+    """edge_profiles: the electron temperature on the cells of an unstructured grid
+    around the plasma (:func:`unstructured_grid`), and the electron density on its
+    nodes, falling off towards the wall and brighter on the outboard side."""
+    from imas.ids_defs import IDS_TIME_MODE_HETEROGENEOUS
+    from imas.ids_identifiers import identifiers
+
+    edge = factory.edge_profiles()
+    # One grid for all times: its time and those of the values are their own
+    edge.ids_properties.homogeneous_time = IDS_TIME_MODE_HETEROGENEOUS
+    edge.grid_ggd.resize(1)
+    edge.grid_ggd[0].time = EDGE_TIMES[0]
+    unstructured_grid(edge.grid_ggd[0])
+    n_theta, n_radial = EDGE_GRID
+
+    def falloff(depth, theta, t, length):
+        """Down from the boundary (depth 0) to the wall (1), more on the outboard
+        side (theta 0), and rising with the heating."""
+        return (scale * (0.5 + 0.05 * t) * (1.0 + 0.4 * np.cos(theta))
+                * np.exp(-depth / length))
+
+    # the rings of nodes and of cells, and the angles around them
+    node_depth, node_theta = np.meshgrid(np.linspace(0.0, 1.0, n_radial + 1),
+                                         np.arange(n_theta) * 2 * np.pi / n_theta,
+                                         indexing="ij")
+    cell_depth, cell_theta = np.meshgrid((np.arange(n_radial) + 0.5) / n_radial,
+                                         (np.arange(n_theta) + 0.5) * 2 * np.pi / n_theta,
+                                         indexing="ij")
+    edge.ggd.resize(len(EDGE_TIMES))
+    for ggd, t in zip(edge.ggd, EDGE_TIMES):
+        ggd.time = t
+        ggd.electrons.temperature.resize(1)
+        temperature = ggd.electrons.temperature[0]
+        temperature.grid_index = 1
+        temperature.grid_subset_index = identifiers.ggd_subset_identifier["cells"].index
+        temperature.values = 100.0 * falloff(cell_depth, cell_theta, t, 0.3).ravel()
+        ggd.electrons.density.resize(1)
+        density = ggd.electrons.density[0]
+        density.grid_index = 1
+        density.grid_subset_index = identifiers.ggd_subset_identifier["nodes"].index
+        density.values = 2.0e19 * falloff(node_depth, node_theta, t, 0.5).ravel()
+    return edge
 
 
 DISTRIBUTION_TIMES = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
@@ -527,7 +633,8 @@ def write_entry(uri: str, scale: float = 1.0, dd_version: Optional[str] = None,
                     equilibrium(factory, scale, rho_tor_norm=rho_tor_norm),
                     magnetics(factory, scale), summary(factory, scale),
                     pf_active(factory, scale), wall(factory),
-                    core_sources(factory, scale), distribution_sources(factory, scale)):
+                    core_sources(factory, scale), distribution_sources(factory, scale),
+                    edge_profiles(factory, scale)):
             entry.put(ids)
 
 

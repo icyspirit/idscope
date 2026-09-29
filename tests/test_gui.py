@@ -1042,3 +1042,43 @@ def test_drop_files_on_the_window(window, data_dir, tmp_path, config_path):
                                                      "title: other"))
     assert drop(window, other)
     assert window.config_path == other and window.config.title == "other"
+
+
+def test_maps_on_unstructured_grids(make_window, data_dir):
+    """The values of a GGD quantity on the cells of an unstructured grid: the cells
+    filled with their colors, with a color bar."""
+    from idscope.gui.mesh import MeshItem
+
+    window = show(make_window, [f"A={data_dir / 'a.nc'}"], {
+        "kind": "map", "equal_aspect": True,
+        "signals": ["edge_profiles/ggd/electrons/temperature[0]/values"]})
+    window.set_time(6.0)
+    QtWidgets.QApplication.processEvents()
+    panel = window.panels[0]
+    assert not panel.errors and isinstance(panel._image, MeshItem)
+    mesh, values, _ = panel.curves[0].data.at(6.0)
+    assert panel._colorbar.levels() == pytest.approx((np.nanmin(values), np.nanmax(values)))
+    assert panel.plot.getAxis("bottom").labelText == "R [m]"
+    # the value under the mouse: of the cell there
+    view = panel.plot.getViewBox()
+    panel._on_move(view.mapViewToScene(QtCore.QPointF(2.31, 0.001)))
+    assert window.coordinates_label.text().endswith(f"value = {values[0]:.5g}")
+    # drawn: the cell there has the color of its value
+    image = window.grab().toImage()
+    point = panel.graphics.mapTo(window, panel.graphics.mapFromScene(
+        view.mapViewToScene(QtCore.QPointF(*mesh.centers[0]))))
+    color = image.pixelColor(point)
+    expected = pg.colormap.get("viridis").map(1.0, mode="qcolor")  # the hottest
+    assert abs(color.red() - expected.red()) + abs(color.green() - expected.green()) < 40
+    # the color bar sets the levels of the cells, and the time their values
+    panel._colorbar.setLevels((0.0, 1000.0))
+    assert panel._image.getLevels() == (0.0, 1000.0)
+    window.set_time(2.0)
+    assert panel._image._values[0] == pytest.approx(values[0] * 0.6 / 0.8)
+
+
+def test_compact_exponents_on_color_bars():
+    from idscope.gui.panel import _compact_exponent
+
+    assert [_compact_exponent(text) for text in ("2e+19", "1.5e+19", "1e-05", "800")] == [
+        "2e19", "1.5e19", "1e-5", "800"]
