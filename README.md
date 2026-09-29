@@ -14,7 +14,7 @@ viewer for [IMAS](https://imas.iter.org) IDS data. It reads data with
 - an IDS browser that lists the quantities filled in a source,
 - configurations saved as YAML, which can be applied to other data,
 - the last session back when idscope starts again: panels, sources and time,
-- templates for `core_profiles`, `equilibrium` and `pf_active`.
+- templates for `core_profiles`, `core_sources`, `equilibrium` and `pf_active`.
 
 ![idscope showing two synthetic data sources](docs/idscope-demo.png)
 
@@ -66,6 +66,7 @@ prints their names.
 | template | shows |
 |---|---|
 | `core_profiles` | Ip, central Te/Ti/ne, loop voltage, li and beta over time; Te/Ti, ne/ni, q, current densities and Zeff profiles; Te and ne against (t, x) |
+| `core_sources` | for every source (beams, waves, ohmic, ...): profiles of electron and ion heating, current density, particles and torque density; power, driven current and torque over time; the power at the selected time, as bars |
 | `equilibrium` | profiles: q, pressure, current densities (j_phi, j_parallel), dp/dpsi, FF', elongation and triangularities |
 | `pf_active` | current and voltage of every coil over time; the coil currents at the selected time, as bars; the coils in the poloidal plane, with the flux surfaces, the plasma boundary, the magnetic axis and the wall |
 
@@ -73,12 +74,16 @@ Profiles are drawn against rho_tor_norm or, when it is not filled, against the
 normalized poloidal flux psi_n (`psi_norm` if filled, otherwise `norm(psi)`, see
 below). The templates work with Data Dictionary 3 and 4 data thanks to alternative
 paths. Panels whose quantities are not filled in a source say so, e.g. the coil
-voltages of a pf_active written by an equilibrium code, which only has currents.
+voltages of a pf_active written by an equilibrium code, which only has currents, or
+the totals of a core_sources written by a beam deposition code, which only has
+profiles.
 A template saved with File → Save as becomes a configuration that can be edited.
 
 ![equilibrium template on the ITER 134173/106 training data](docs/template-equilibrium.png)
 
 ![pf_active template comparing two synthetic sources](docs/template-pf_active.png)
+
+![core_sources template comparing two synthetic sources](docs/template-core_sources.png)
 
 ## Using the scope
 

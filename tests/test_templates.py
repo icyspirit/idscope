@@ -1,15 +1,16 @@
 import numpy as np
 import pytest
 
+from idscope.data import parse_signal_path
 from idscope.errors import ConfigError
 from idscope.templates import load_template, template_names
 
 
 def test_template_names():
-    assert template_names() == ["core_profiles", "equilibrium", "pf_active"]
+    assert template_names() == ["core_profiles", "core_sources", "equilibrium", "pf_active"]
 
 
-@pytest.mark.parametrize("name", ["core_profiles", "equilibrium", "pf_active"])
+@pytest.mark.parametrize("name", template_names())
 def test_templates_load(name):
     config = load_template(name)
     assert config.title == name
@@ -18,7 +19,7 @@ def test_templates_load(name):
 
 
 def test_unknown_template():
-    with pytest.raises(ConfigError, match="available: core_profiles, equilibrium, pf_active"):
+    with pytest.raises(ConfigError, match="available: core_profiles, core_sources, "):
         load_template("nope")
 
 
@@ -47,7 +48,7 @@ def errors_by_panel(window):
     return {panel.config.title: panel.errors for panel in window.panels if panel.errors}
 
 
-@pytest.mark.parametrize("name", ["core_profiles", "equilibrium", "pf_active"])
+@pytest.mark.parametrize("name", template_names())
 def test_templates_on_demo_data(template_window, data_dir, name):
     window = template_window(name, [data_dir / "a.nc", data_dir / "b.nc"])
     assert errors_by_panel(window) == {}
@@ -164,3 +165,85 @@ def test_pf_active_template_on_one_time(template_window, solved_coils):
     np.testing.assert_allclose(bars._bars[0].item.opts["height"],
                                [12, 15, 18, 18, 15, 12, 0, 0, 0, 0, 0, 0])
     assert len(section._shape_labels) == len(COILS)
+
+
+SOURCES = ["nbi", "ec", "ohmic", "collisional_equipartition"]
+
+
+def test_core_sources_template_on_demo_data(template_window, data_dir):
+    window = template_window("core_sources", [data_dir / "a.nc", data_dir / "b.nc"])
+    window.set_time(6.0)
+    panels = {panel.config.title: panel for panel in window.panels}
+    names = {title: [label.text for _, label in panel.legend.items]
+             for title, panel in panels.items()}
+    assert names["Electron heating"] == SOURCES + ["a", "b"]
+    assert names["Ion heating"] == ["nbi", "collisional_equipartition", "a", "b"]
+    assert names["Torque density"] == ["nbi", "a", "b"]
+    assert panels["Electron heating"].plot.getAxis("bottom").labelText == "rho_tor_norm"
+
+    # a source has the same color in every panel
+    def colors(panel):
+        return {c.name.split(" [")[0]: c.item.opts["pen"].color().name()
+                for c in panel.curves if c.source_index == 0}
+
+    electrons, ions = colors(panels["Electron heating"]), colors(panels["Ion heating"])
+    assert ions == {name: electrons[name] for name in ions}
+    assert len(set(electrons.values())) == len(SOURCES)
+
+    bars = panels["Power at the selected time"]
+    assert bars.kind == "profile" and bars._categories == SOURCES
+    source = window.pool.get(window.config.sources[0])
+    power = source.signal(parse_signal_path("core_sources/source[:]/global_quantities/power"))
+    values, _ = power.values_at(6.0)
+    # the beam, EC just on, the fading ohmic heating, and the exchange, which gives none
+    np.testing.assert_allclose(1e-6 * values, [5.0, 2.98, 0.59, 0.0], atol=0.01)
+    np.testing.assert_allclose(bars._bars[0].item.opts["height"], 1e-6 * values)
+    np.testing.assert_allclose(bars._bars[1].item.opts["height"], 0.8e-6 * values)
+
+
+@pytest.fixture(scope="module")
+def beam_deposition(tmp_path_factory):
+    """What a neutral beam deposition code writes (here as NuBDeC in tbd-fusion
+    does): one source, at one time, with its profiles and no totals, against
+    rho_tor_norm and rho_pol_norm, in Data Dictionary 3.39.0."""
+    import imas
+
+    path = tmp_path_factory.mktemp("nbi") / "sources.nc"
+    rho = np.linspace(0.0, 1.0, 41)
+    with imas.DBEntry(str(path), "w", dd_version="3.39.0") as entry:
+        ids = entry.factory.core_sources()
+        ids.ids_properties.homogeneous_time = 1
+        ids.time = [2.0]
+        ids.source.resize(1)
+        source = ids.source[0]
+        source.identifier.name = "nbi"
+        source.identifier.index = 2
+        source.profiles_1d.resize(1)
+        profiles = source.profiles_1d[0]
+        profiles.time = 2.0
+        profiles.grid.rho_tor_norm = rho
+        profiles.grid.rho_pol_norm = np.sqrt(rho)
+        shape = np.exp(-((rho / 0.4) ** 2))
+        profiles.electrons.energy = 0.3e6 * shape
+        profiles.total_ion_energy = 0.5e6 * shape
+        profiles.electrons.particles = 2.0e19 * shape
+        profiles.momentum_tor = 1.5 * shape
+        profiles.j_parallel = 0.2e6 * shape
+        entry.put(ids)
+    return path
+
+
+def test_core_sources_template_on_a_beam_deposition(template_window, beam_deposition):
+    window = template_window("core_sources", [beam_deposition])
+    # the profiles, at the one time; the totals are not filled
+    assert set(errors_by_panel(window)) == {
+        "Power", "Driven current", "Torque", "Power at the selected time"
+    }
+    profiles = window.panels[:5]
+    assert all([c.name for c in panel.curves] == ["nbi"] for panel in profiles)
+    torque = profiles[4].curves[0].data
+    assert torque.path.text == "core_sources/source[:]/profiles_1d/momentum_tor"
+    assert window.time == 2.0
+    x, y = profiles[0].curves[0].item.getData()
+    np.testing.assert_allclose(x, np.linspace(0.0, 1.0, 41))
+    assert y[0] == pytest.approx(0.3)
