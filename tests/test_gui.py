@@ -1219,3 +1219,75 @@ def test_setup_dialog_relative(window):
     assert dialog.apply() and panel.config.relative == "difference"
     dialog.relative.setCurrentIndex(0)
     assert dialog.apply() and panel.config.relative is None
+
+
+def test_maps_on_unstructured_grids(make_window, data_dir):
+    """The values of a GGD quantity on the cells of an unstructured grid: the cells
+    filled with their colors, with a color bar."""
+    from idscope.gui.mesh import MeshItem
+
+    window = show(make_window, [f"A={data_dir / 'a.nc'}"], {
+        "kind": "map", "equal_aspect": True,
+        "signals": ["edge_profiles/ggd/electrons/temperature[0]/values"]})
+    window.set_time(6.0)
+    QtWidgets.QApplication.processEvents()
+    panel = window.panels[0]
+    assert not panel.errors and isinstance(panel._image, MeshItem)
+    mesh, values, _ = panel.curves[0].data.at(6.0)
+    assert panel._colorbar.levels() == pytest.approx((np.nanmin(values), np.nanmax(values)))
+    assert panel.plot.getAxis("bottom").labelText == "R [m]"
+    # the value under the mouse: of the cell there
+    view = panel.plot.getViewBox()
+    panel._on_move(view.mapViewToScene(QtCore.QPointF(2.31, 0.001)))
+    assert window.coordinates_label.text().endswith(f"value = {values[0]:.5g}")
+    # drawn: the cell there has the color of its value
+    image = window.grab().toImage()
+    point = panel.graphics.mapTo(window, panel.graphics.mapFromScene(
+        view.mapViewToScene(QtCore.QPointF(*mesh.centers[0]))))
+    color = image.pixelColor(point)
+    expected = pg.colormap.get("viridis").map(1.0, mode="qcolor")  # the hottest
+    assert abs(color.red() - expected.red()) + abs(color.green() - expected.green()) < 40
+    # the color bar sets the levels of the cells, and the time their values
+    panel._colorbar.setLevels((0.0, 1000.0))
+    assert panel._image.getLevels() == (0.0, 1000.0)
+    window.set_time(2.0)
+    assert panel._image._values[0] == pytest.approx(values[0] * 0.6 / 0.8)
+    # the crosshair of the Point mode says the value of the cell too
+    window.set_mode("point")
+    panel._on_move(view.mapViewToScene(QtCore.QPointF(2.31, 0.001)))
+    label = panel._cursor_items[2].textItem.toPlainText().splitlines()
+    assert len(label) == 2 and label[1].endswith(f"= {panel._image._values[0]:.5g}")
+    panel._on_move(view.mapViewToScene(QtCore.QPointF(1.8, 0.0)))  # no cell there
+    assert len(panel._cursor_items[2].textItem.toPlainText().splitlines()) == 1
+
+
+def test_compact_exponents_on_color_bars():
+    from idscope.gui.panel import _compact_exponent
+
+    assert [_compact_exponent(text) for text in ("2e+19", "1.5e+19", "1e-05", "800")] == [
+        "2e19", "1.5e19", "1e-5", "800"]
+
+
+def test_unstructured_grids_relative_to_the_first(make_window, data_dir):
+    """B − A and B / A of values on the cells of the same grid, cell by cell."""
+    from idscope.gui.mesh import MeshItem
+
+    window = show(make_window, [f"A={data_dir / 'a.nc'}", f"B={data_dir / 'b.nc'}"], {
+        "kind": "map", "relative": "difference",
+        "signals": ["edge_profiles/ggd/electrons/temperature[0]/values",
+                    {"path": "equilibrium/time_slice/boundary/outline", "label": "boundary"}]})
+    window.set_time(6.0)
+    panel = window.panels[0]
+    assert not panel.errors and isinstance(panel._image, MeshItem)
+    assert [c.name for c in panel.curves] == [
+        "temperature[0]/values [B − A]", "boundary [A]", "boundary [B]"]
+    assert panel._colorbar.getAxis("left").labelText.startswith("Δ temperature[0]/values")
+    # the line styles stand for the sources of the boundaries, as they are
+    assert [label.text for _, label in panel.legend.items][-2:] == ["A", "B"]
+    difference = panel._image._values.copy()
+    panel.set_relative("ratio")
+    np.testing.assert_allclose(panel._image._values, 0.8, rtol=1e-9)  # B is 80 % of A
+    panel.set_relative(None)
+    assert [c.source for c in panel.curves][:2] == ["A", "B"]
+    np.testing.assert_allclose(difference, -0.2 * panel.curves[0].data.at(6.0)[1],
+                               rtol=1e-9)

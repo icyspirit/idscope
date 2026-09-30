@@ -29,6 +29,7 @@ one trace or profile per element of the arrays of structures, named after them.
 
 import difflib
 import logging
+import warnings
 from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -248,6 +249,90 @@ class MapSeries(SignalData):
         index = self.time_index(t)
         x1, x2, z = self.at_index(index)
         return x1, x2, z, self.slice_time(index)
+
+
+class Mesh:
+    """The cells of an unstructured grid in the (R, Z) plane: the points of its
+    nodes, and the nodes of every cell, in order around it (indices of points)."""
+
+    def __init__(self, points: np.ndarray, cells: Sequence[np.ndarray]):
+        self.points = np.asarray(points, dtype=float)
+        self.cells = [np.asarray(cell, dtype=int) for cell in cells]
+        self.centers = np.full((len(self.cells), 2), np.nan)
+        for size, members in _by_size(self.cells).items():
+            indices = np.array([self.cells[k] for k in members])
+            self.centers[members] = self.points[indices].mean(axis=1)
+
+    def polygons(self) -> List[np.ndarray]:
+        """The (R, Z) of the corners of every cell."""
+        return [self.points[cell] for cell in self.cells]
+
+    def cell_at(self, r: float, z: float) -> Optional[int]:
+        """The cell that (r, z) is in, or None."""
+        if not len(self.cells):
+            return None
+        distance = np.hypot(self.centers[:, 0] - r, self.centers[:, 1] - z)
+        near = np.argsort(np.nan_to_num(distance, nan=np.inf))[:16]
+        for index in near:
+            if self.cells[index].size and _inside(self.points[self.cells[index]], r, z):
+                return int(index)
+        return None
+
+
+def _by_size(cells: Sequence[np.ndarray]) -> Dict[int, np.ndarray]:
+    """The cells (their positions) that have each number of nodes, but none."""
+    sizes = np.array([len(cell) for cell in cells], dtype=int)
+    return {int(size): np.flatnonzero(sizes == size) for size in np.unique(sizes) if size}
+
+
+def _inside(polygon: np.ndarray, x: float, y: float) -> bool:
+    """Whether (x, y) is inside a polygon (by the crossings of a ray)."""
+    px, py = polygon[:, 0], polygon[:, 1]
+    qx, qy = np.roll(px, -1), np.roll(py, -1)
+    straddle = (py > y) != (qy > y)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cross = px + (y - py) * (qx - px) / (qy - py)
+    return bool(np.count_nonzero(straddle & (x < cross)) % 2)
+
+
+class MeshSeries(SignalData):
+    """A quantity on the cells of an unstructured grid in the (R, Z) plane (the
+    values of a GGD quantity), with a value per cell and time slice.
+
+    ``at_index(i)`` gives the :class:`Mesh` and the value of every cell (NaN for
+    cells without one); values on the nodes of the grid are given to the cells as
+    the mean over their nodes. Slices are read on demand.
+    """
+
+    kind = MAP
+
+    def __init__(self, path, time, count: int,
+                 loader: Callable[[int], Tuple[Optional[Mesh], np.ndarray]],
+                 value_axis: Axis, documentation="", fixed_time=None, on: str = "cells"):
+        super().__init__(path, time, value_axis, documentation, fixed_time)
+        self.count = count
+        self._loader = loader
+        self._cache: Dict[int, Tuple[Optional[Mesh], np.ndarray]] = {}
+        self.x_axis = Axis("R", "m")
+        self.x2_axis = Axis("Z", "m")
+        self.on = on
+        """What the values are on: ``cells``, or ``nodes`` (given to the cells)."""
+
+    def at_index(self, index: Optional[int]) -> Tuple[Optional[Mesh], np.ndarray]:
+        if index is None or self.count == 0:
+            return None, np.empty(0)
+        if index not in self._cache:
+            if len(self._cache) > 32:
+                self._cache.clear()
+            self._cache[index] = self._loader(index)
+        return self._cache[index]
+
+    def at(self, t: Optional[float]):
+        """The mesh and the values closest to time ``t``: ``(mesh, values,
+        time_of_slice)``."""
+        index = self.time_index(t)
+        mesh, values = self.at_index(index)
+        return mesh, values, self.slice_time(index)
 
 
 class Channels(SignalData):
@@ -939,6 +1024,17 @@ def _extract_member(ids, path: SignalPath, plan: _Plan, key: Dict[int, int]):
 
             return MapSeries(path, times, len(slices), load_grid, grid[0][1], grid[1][1],
                              value_axis, doc, fixed_time)
+        # on an unstructured grid in the (R, Z) plane: values of its cells
+        on_mesh = _on_mesh(first[0], first[1]) if first is not None else None
+        if on_mesh is not None:
+
+            def load_mesh(k: int):
+                leaf, values, _ = slice_data(slices[k])
+                found = _on_mesh(leaf, values) if leaf is not None else None
+                return (None, np.empty(0)) if found is None else found[:2]
+
+            return MeshSeries(path, times, len(slices), load_mesh, value_axis, doc,
+                              fixed_time, on_mesh[2])
 
     if len(kept) == 1:
         xs, ys, x_axis = [], [], None
@@ -1049,6 +1145,12 @@ def _from_leaf(path, leaf, selectors, value_axis, doc, fixed_time,
             if z.size:
                 return MapSeries(path, None, 1, lambda i: (x1, x2, z), grid[0][1],
                                  grid[1][1], value_axis, doc, fixed_time)
+        on_mesh = _on_mesh(leaf, selected) if meta.name == "values" and \
+            full[dim] == ALL else None
+        if on_mesh is not None:  # values of a GGD, on the cells of a mesh
+            mesh, cell_values, on = on_mesh
+            return MeshSeries(path, None, 1, lambda i: (mesh, cell_values), value_axis,
+                              doc, fixed_time, on)
         x, x_axis = coordinate(dim)
         return ProfileSeries(path, None, [x], [selected], x_axis, value_axis, doc,
                              fixed_time)
@@ -1128,6 +1230,257 @@ def _on_grid(values: np.ndarray, grid) -> Tuple[np.ndarray, np.ndarray, np.ndarr
         centers1, centers2 = (x1[1:] + x1[:-1]) / 2, (x2[1:] + x2[:-1]) / 2
         return centers1, centers2, values.reshape((len(centers1), len(centers2)), order="F")
     return np.empty(0), np.empty(0), np.empty((0, 0))
+
+
+# ---------------------------------------------------------------------------------
+# Values of a GGD on an unstructured grid
+# ---------------------------------------------------------------------------------
+
+_NODES_SUBSET, _CELLS_SUBSET = 1, 5
+"""Grid subsets that the Data Dictionary declares implicitly: all the nodes, and
+all the 2D cells of a grid."""
+_NODE_DIMENSION, _CELL_DIMENSION = 1, 3
+"""Dimensions of grid subsets and their objects: 1 for nodes, 3 for 2D cells."""
+_MESHES: List[Tuple[object, Mesh]] = []
+"""The meshes read last, with their grids (reading a large grid takes a while)."""
+
+
+def _on_mesh(values, selected) -> Optional[Tuple[Mesh, np.ndarray, str]]:
+    """The values of a GGD quantity as values of the cells of its grid, when that
+    grid is unstructured in the (R, Z) plane (one space, with 2D cells) and the
+    values are on its cells or on its nodes: ``(mesh, value of every cell, "cells"
+    or "nodes")``. None otherwise."""
+    from imas.util import get_parent
+
+    scalar = get_parent(values)
+    if scalar is None or not hasattr(scalar, "grid_subset_index"):
+        return None
+    grid = _ggd_grid(scalar)
+    if grid is None:
+        return None
+    mesh = _grid_mesh(grid)
+    if mesh is None:
+        return None
+    index = _scalar(scalar.grid_subset_index)
+    subset = _subset_objects(grid, int(index) if np.isfinite(index) else _NODES_SUBSET,
+                             len(mesh.points), len(mesh.cells))
+    if subset is None:
+        return None
+    on, objects = subset
+    selected = np.asarray(selected, dtype=float).ravel()
+    if selected.size != len(objects):
+        return None
+    if on == "cells":
+        cell_values = np.full(len(mesh.cells), np.nan)
+        cell_values[objects] = selected
+        return mesh, cell_values, on
+    node_values = np.full(len(mesh.points), np.nan)
+    node_values[objects] = selected
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # cells of no known node
+        cell_values = np.array([np.nanmean(node_values[cell]) if cell.size else np.nan
+                                for cell in mesh.cells])
+    return mesh, cell_values, on
+
+
+def _ggd_grid(scalar):
+    """The grid of a GGD quantity: that of its GGD (e.g. in distribution_sources),
+    or the one in ``grid_ggd`` of its IDS at the time of its slice (e.g. in
+    edge_profiles)."""
+    from imas.util import get_parent
+
+    node, slice_time = scalar, None
+    while node is not None:
+        grid = getattr(node, "grid", None)
+        if grid is not None and hasattr(grid, "space"):
+            return grid
+        time = getattr(node, "time", None)
+        if slice_time is None and isinstance(time, IDSPrimitive) and \
+                time.metadata.ndim == 0 and time.has_value:
+            slice_time = float(time.value)
+        parent = get_parent(node)
+        if parent is None:
+            break
+        node = parent
+    grids = getattr(node, "grid_ggd", None)  # node: the IDS
+    if grids is None or not len(grids):
+        return None
+    if len(grids) == 1 or slice_time is None:
+        return grids[0]
+    times = aos_times(grids)
+    return grids[int(np.nanargmin(np.abs(times - slice_time)))] \
+        if np.isfinite(times).any() else grids[0]
+
+
+def _grid_mesh(grid) -> Optional[Mesh]:
+    """The mesh of a grid of one space whose nodes are in (R, Z) and which has 2D
+    cells; None for other grids."""
+    for known, mesh in _MESHES:
+        if known is grid:
+            return mesh
+    spaces = grid.space
+    if len(spaces) != 1:
+        return None
+    space = spaces[0]
+    dimensions = space.objects_per_dimension
+    if len(dimensions) < 3 or not len(dimensions[0].object) or \
+            not len(dimensions[2].object):
+        return None
+    points = np.full((len(dimensions[0].object), 2), np.nan)
+    for k, geometry in enumerate(_children(dimensions[0].object, "geometry")):
+        if geometry.size >= 2:
+            points[k] = geometry[:2]
+    if _z_first(space):
+        points = points[:, ::-1]
+    cells = []
+    for indices in _children(dimensions[2].object, "nodes"):
+        indices = indices[np.isfinite(indices)].astype(int) - 1  # Fortran indices
+        if indices.size < 3 or indices.min() < 0 or indices.max() >= len(points):
+            cells.append(np.empty(0, dtype=int))
+        else:
+            cells.append(indices)
+    mesh = Mesh(points, _around(points, cells))
+    _MESHES.insert(0, (grid, mesh))
+    del _MESHES[4:]
+    return mesh
+
+
+def _children(elements, child: str) -> List[np.ndarray]:
+    """The values of ``child`` (e.g. ``geometry``, or ``object/index`` in an array of
+    structures of each) of every element of an array of structures, as float arrays
+    (NaN where they are not filled).
+
+    A grid can have tens of thousands of objects: read one by one from a file, as
+    lazy loading does, that takes a read each. From a netCDF file they are read at
+    once instead, when the structure of the file allows it.
+    """
+    at_once = _read_at_once(elements, child)
+    if at_once is not None:
+        return at_once
+    head, _, leaf = child.partition("/")
+    if not leaf:
+        return [_leaf_array(getattr(element, head)).ravel() for element in elements]
+    return [np.array([_scalar(getattr(item, leaf)) for item in getattr(element, head)])
+            for element in elements]
+
+
+def _read_at_once(elements, child: str) -> Optional[List[np.ndarray]]:
+    """``child`` of every element of an array of structures that is lazily loaded
+    from a netCDF file, from one read of its variable; None when it is not."""
+    try:
+        context = elements._lazy_ctx
+        nc2ids = context.nc2ids
+        variable = nc2ids._lazy_map[f"{elements.metadata.path_string}/{child}"]
+        count = len(elements)
+        values = np.ma.filled(np.ma.asarray(variable[context.index], dtype=float), np.nan)
+        # the file has room for the longest of such arrays of structures
+        values = values[:count].reshape(count, -1) if count else values.reshape(0, 0)
+    except Exception:  # not lazily loaded from netCDF, or another imas-python
+        return None
+    values[values == EMPTY_FLOAT] = np.nan
+    values[values == EMPTY_INT] = np.nan
+    if "sparse" in variable.ncattrs() and "/" not in child:
+        try:
+            shapes = np.asarray(nc2ids.group[variable.name + ":shape"][context.index])
+            lengths = shapes[:count].reshape(count, -1)[:, 0]
+        except Exception:
+            return None
+        return [values[k, :lengths[k]] for k in range(count)]
+    return list(values)
+
+
+def _z_first(space) -> bool:
+    """Whether the nodes of a space give Z before R, as its coordinates say (R
+    first unless they say otherwise)."""
+    names = [_space_axis_name(space, k) for k in range(2)]
+    return names == ["z", "r"]
+
+
+def _space_axis_name(space, number: int) -> str:
+    kinds = space.coordinates_type
+    if kinds.metadata.data_type is IDSDataType.STRUCT_ARRAY:  # Data Dictionary 4
+        if len(kinds) > number:
+            name = str(kinds[number].name.value).strip() if kinds[number].name.has_value \
+                else ""
+            if name:
+                return name.lower()
+            index = kinds[number].index.value if kinds[number].index.has_value else None
+        else:
+            return ""
+    else:  # Data Dictionary 3: the indices of the coordinates
+        values = _leaf_array(kinds).ravel()
+        index = int(values[number]) if values.size > number and \
+            np.isfinite(values[number]) else None
+    if index is None:
+        return ""
+    try:
+        from imas.ids_identifiers import identifiers
+
+        return identifiers.coordinate_identifier(int(index)).name.lower()
+    except (ValueError, AttributeError):
+        return ""
+
+
+def _around(points: np.ndarray, cells: List[np.ndarray]) -> List[np.ndarray]:
+    """The nodes of every cell in order around it: as given, unless that order
+    crosses itself (e.g. the corners of a quadrilateral row by row), then by angle
+    about its center. Cells of as many nodes are ordered together."""
+    cells = list(cells)
+    for size, members in _by_size(cells).items():
+        if size < 4:
+            continue  # a triangle is in order either way
+        given = np.array([cells[k] for k in members])
+        corners = points[given]
+        center = corners.mean(axis=1, keepdims=True)
+        angles = np.arctan2(corners[..., 1] - center[..., 1], corners[..., 0] - center[..., 0])
+        by_angle = np.take_along_axis(given, np.argsort(angles, axis=1), axis=1)
+        with np.errstate(invalid="ignore"):
+            crossed = np.abs(_areas(points[by_angle])) > 1.01 * np.abs(_areas(corners))
+        for k in np.flatnonzero(crossed):
+            cells[members[k]] = by_angle[k]
+    return cells
+
+
+def _areas(polygons: np.ndarray) -> np.ndarray:
+    """Signed areas of polygons of as many corners, ``(count, corners, 2)``."""
+    x, y = polygons[..., 0], polygons[..., 1]
+    return 0.5 * np.sum(x * np.roll(y, -1, axis=1) - y * np.roll(x, -1, axis=1), axis=1)
+
+
+def _subset_objects(grid, index: int, n_nodes: int, n_cells: int):
+    """What the elements of grid subset ``index`` are: ``("cells" or "nodes",
+    their indices)``, from its definition in the grid, else from the subsets that
+    the Data Dictionary declares implicitly (all nodes, all cells). None for other
+    subsets (e.g. edges)."""
+    for subset in grid.grid_subset:
+        identifier = _scalar(subset.identifier.index)
+        if not np.isfinite(identifier) or int(identifier) != index:
+            continue
+        if not len(subset.element):
+            break  # declared, but not element by element: implicit
+        objects = []
+        for kinds, numbers in zip(_children(subset.element, "object/dimension"),
+                                  _children(subset.element, "object/index")):
+            kinds, numbers = kinds[np.isfinite(kinds)], numbers[np.isfinite(numbers)]
+            if kinds.size != 1 or numbers.size != 1:
+                return None  # an element of several objects
+            objects.append((kinds[0], numbers[0]))
+        dimensions = {kind for kind, _ in objects}
+        if dimensions == {_CELL_DIMENSION}:
+            on, count = "cells", n_cells
+        elif dimensions == {_NODE_DIMENSION}:
+            on, count = "nodes", n_nodes
+        else:
+            return None
+        found = np.array([number for _, number in objects], dtype=float) - 1
+        if not np.isfinite(found).all() or found.min() < 0 or found.max() >= count:
+            return None
+        return on, found.astype(int)
+    if index == _CELLS_SUBSET:
+        return "cells", np.arange(n_cells)
+    if index == _NODES_SUBSET:
+        return "nodes", np.arange(n_nodes)
+    return None
 
 
 # ---------------------------------------------------------------------------------

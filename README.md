@@ -126,7 +126,7 @@ A template saved with File → Save as becomes a configuration that can be edite
 - **Pan** (the default): drag to move; right-drag scales the axes, the wheel zooms.
   **Zoom**: drag a rectangle. **Point**: a crosshair follows the mouse, with the
   values of the curves under it (of the bars of an element, of an image at that
-  place) and dots where it meets them. Click or drag in a time trace to set the time.
+  place, of the cell of a grid under it) and dots where it meets them. Click or drag in a time trace to set the time.
 - The **time bar** at the bottom steps through the time slices of the profiles and
   maps (also with the keys, see below). The dashed line in time traces can be
   dragged.
@@ -281,8 +281,16 @@ distribution_sources/source[:]/ggd/particles[0]/values   a map per source, on a 
   browser lists them as *shape*.
 - The `values` of a GGD quantity on a structured grid (grid identifier
   `structured_spaces`: two spaces of one dimension, e.g. R and Z) are a map, on the
-  nodes of the grid (the first space running fastest) or on its cells. Values on
-  other grids are drawn along their index.
+  nodes of the grid (the first space running fastest) or on its cells.
+- On an unstructured grid (one space whose nodes are in R and Z, with 2D cells, as
+  edge codes such as SOLPS write them: `edge_profiles/ggd/electrons/temperature[0]/values`),
+  they are a map of its cells, each filled with the color of its value. Values on the
+  nodes give each cell the mean of its nodes. The grid is that of the GGD, or, in IDSs
+  such as edge_profiles, the one of `grid_ggd` at the time of the values; the grid
+  subset of the values says what they are on, from its elements or, for all the
+  nodes and all the cells, from its identifier. Grids read from a netCDF file are
+  read at once, which takes a fraction of a second for tens of thousands of cells.
+  Values on other grids or subsets (e.g. edges) are drawn along their index.
 - The x axis and the time come from the Data Dictionary coordinates, for homogeneous
   and heterogeneous time alike. Another x can be chosen per signal (`x:` in the
   configuration, *X path* in the setup dialog), e.g. `core_profiles/profiles_1d/grid/psi`.
@@ -314,9 +322,11 @@ distribution_sources/source[:]/ggd/particles[0]/values   a map per source, on a 
   interpolated in time for traces, and taken at its closest time slice (within its
   time range) and interpolated on the grid of the first for profiles and maps. A
   time trace applies to profiles and maps at their times, e.g. a profile divided by
-  its central value. Signals with wildcards combine member by member (by name), or
-  each member with the same signal. The result is labeled with the expression, and
-  its units follow (a ratio of like quantities has none).
+  its central value. Values on the cells of an unstructured grid combine cell by
+  cell with values on the same grid (e.g. two runs of an edge code), not with other
+  grids. Signals with wildcards combine member by member (by name), or each member
+  with the same signal. The result is labeled with the expression, and its units
+  follow (a ratio of like quantities has none).
 
 Data stored with another major Data Dictionary version than the one idscope uses
 (e.g. DD 3 data with DD 4) is shown in its own version, so paths use that version's
@@ -328,7 +338,7 @@ names; this is noted in the log. `--dd-version` selects the version to use.
 |---|---|---|
 | `trace` | y(t) | scalars in a time array of structures, arrays along a time coordinate |
 | `profile` | y(x), at the current time for profiles in a time array of structures, or a bar per element | 1D quantities; values of paths with wildcards |
-| `map` | z(x1, x2), at the current time for maps in a time array of structures, with shapes over it | 2D quantities, e.g. `profiles_2d[0]/psi`; values of a GGD on a structured grid; shapes in (R, Z) |
+| `map` | z(x1, x2), at the current time for maps in a time array of structures, with shapes over it | 2D quantities, e.g. `profiles_2d[0]/psi`; values of a GGD on a structured grid, or on the cells or nodes of an unstructured one; shapes in (R, Z) |
 | `spacetime` | a profile as an image z(t, x) | 1D quantities in a time array of structures |
 
 `auto` (the default) picks the kind from the first signal; a value per element of a
