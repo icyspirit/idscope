@@ -3,7 +3,8 @@
 [![tests](https://github.com/icyspirit/idscope/actions/workflows/tests.yml/badge.svg)](https://github.com/icyspirit/idscope/actions/workflows/tests.yml)
 
 A lightweight [jScope](https://www.mdsplus.org/index.php/Documentation:Tutorial:GUIs:jScope)-like
-viewer for [IMAS](https://imas.iter.org) IDS data. It reads data with
+viewer for [IMAS](https://github.com/iterorganization)
+[IDS](https://imas-data-dictionary.readthedocs.io) data. It reads data with
 [imas-python](https://github.com/iterorganization/IMAS-Python) and draws it with
 [pyqtgraph](https://www.pyqtgraph.org):
 
@@ -425,3 +426,7 @@ Code layout: `idscope.data` (sources, signal paths, extraction; no Qt),
 `idscope.config` (YAML configuration), `idscope.templates` (YAML templates),
 `idscope.session` (the last session and where settings are kept),
 `idscope.gui` (Qt widgets), `idscope.cli`.
+
+## License
+
+idscope is released under the [MIT License](LICENSE).

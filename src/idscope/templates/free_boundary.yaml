@@ -1,6 +1,6 @@
 # idscope template: an equilibrium from a free-boundary solver, with the coils that
-# hold it (SONAMU and FreeGS in tbd-fusion, for two: "-T sonamu" and "-T freegs" are
-# this template).
+# hold it (SONAMU and FreeGS, for two: "-T sonamu" and "-T freegs" are this
+# template).
 #
 #   idscope -T free_boundary SOURCE [SOURCE ...]
 #

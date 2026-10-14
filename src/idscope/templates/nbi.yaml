@@ -1,5 +1,5 @@
-# idscope template: neutral beam injection, as a beam code writes it (NuBDeC in
-# tbd-fusion, for one: "-T nubdec" is this template).
+# idscope template: neutral beam injection, as a beam code writes it (NuBDeC, for
+# one: "-T nubdec" is this template).
 #
 #   idscope -T nbi SOURCE [SOURCE ...]
 #

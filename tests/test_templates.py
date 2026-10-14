@@ -223,12 +223,11 @@ NEUTRON_RATES = 10.0 * NEUTRON_R[:, None] + NEUTRON_Z[None, :]  # by R and Z
 
 @pytest.fixture(scope="module")
 def beam_deposition(tmp_path_factory):
-    """What a neutral beam code writes (here as NuBDeC in tbd-fusion does), at one
-    time, in Data Dictionary 3.39.0: what the beam gives the plasma (one source,
-    with its profiles and no totals, against rho_tor_norm and rho_pol_norm), the
-    fast ions, where the ions of the beam and the neutrons are born, and the
-    neutron rates. No equilibrium and no wall: they are in the entry the code was
-    run on."""
+    """What a neutral beam code writes (here as NuBDeC does), at one time, in
+    Data Dictionary 3.39.0: what the beam gives the plasma (one source, with its
+    profiles and no totals, against rho_tor_norm and rho_pol_norm), the fast ions,
+    where the ions of the beam and the neutrons are born, and the neutron rates.
+    No equilibrium and no wall: they are in the entry the code was run on."""
     import imas
     from imas.ids_identifiers import identifiers
 
@@ -403,8 +402,8 @@ def test_nbi_template_on_a_beam_code_output(template_window, beam_deposition):
 @pytest.fixture(scope="module")
 def free_boundary_solution(tmp_path_factory):
     """What a free-boundary equilibrium solver writes (here as SONAMU and FreeGS
-    in tbd-fusion do), in Data Dictionary 3.39.0: the equilibrium at one time,
-    without rho_tor_norm, and the coil currents that hold it."""
+    do), in Data Dictionary 3.39.0: the equilibrium at one time, without
+    rho_tor_norm, and the coil currents that hold it."""
     import imas
 
     from idscope.demo import equilibrium, pf_active
@@ -451,11 +450,11 @@ def test_free_boundary_template_on_demo_data(template_window, data_dir):
 
 @pytest.fixture(scope="module")
 def machine_description(tmp_path_factory):
-    """What autofrd writes (through tbd-fusion) for a reactor it drew, in Data
-    Dictionary 3.39.0: the solenoid and the PF coils as rectangles of one turn and
-    no current, a part of the TF coil as a passive loop, the vessel as an annular
-    unit and the blanket and a port as limiter units, and the TF coil as the center
-    line of its conductor. No time base anywhere."""
+    """A reactor that autofrd drew, as IDSs in Data Dictionary 3.39.0: the
+    solenoid and the PF coils as rectangles of one turn and no current, a part of
+    the TF coil as a passive loop, the vessel as an annular unit and the blanket
+    and a port as limiter units, and the TF coil as the center line of its
+    conductor. No time base anywhere."""
     import imas
     from imas.ids_defs import EMPTY_FLOAT
 

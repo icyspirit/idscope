@@ -22,7 +22,7 @@ ALIASES = {
     "freegs": "free_boundary",
     "autofrd": "device",
 }
-"""Other names of templates: codes whose results they show (e.g. in tbd-fusion)."""
+"""Other names of templates: the codes whose results they show."""
 
 
 def template_names() -> List[str]:
