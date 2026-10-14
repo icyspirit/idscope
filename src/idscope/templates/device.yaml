@@ -1,5 +1,6 @@
 # idscope template: a machine: its wall and vacuum vessel, its coils and passive
-# conductors (autofrd in tbd-fusion writes these: "-T autofrd" is this template).
+# conductors, as a machine design code writes them (autofrd, for one: "-T autofrd"
+# is this template).
 #
 #   idscope -T device SOURCE [SOURCE ...]
 #

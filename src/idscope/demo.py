@@ -348,9 +348,9 @@ def core_sources(factory, scale: float = 1.0, n_time: int = N_TIME):
 
 def structured_grid(grid, axes) -> None:
     """Write a rectilinear GGD grid: a space of one dimension per axis, its nodes
-    the points of the axis (as NuBDeC in tbd-fusion writes it). ``axes`` are pairs
-    of a coordinate name (e.g. ``"r"``) and its points. Values on the nodes of
-    such a grid run with the first axis fastest."""
+    the points of the axis (as NuBDeC writes it). ``axes`` are pairs of a
+    coordinate name (e.g. ``"r"``) and its points. Values on the nodes of such a
+    grid run with the first axis fastest."""
     from imas.ids_identifiers import identifiers
 
     grid.identifier.name = "structured_spaces"
@@ -506,9 +506,9 @@ def _total(rate: np.ndarray) -> float:
 
 
 def distribution_sources(factory, scale: float = 1.0, n_markers: int = 400):
-    """distribution_sources, as a neutral beam code writes them (NuBDeC in
-    tbd-fusion, for one): where the ions of the beam are born, as markers, and
-    where the neutrons of D-D fusion are, as birth rates on a grid of R by Z, at
+    """distribution_sources, as a neutral beam code writes them (NuBDeC, for
+    one): where the ions of the beam are born, as markers, and where the neutrons
+    of D-D fusion are, as birth rates on a grid of R by Z, at
     :data:`DISTRIBUTION_TIMES`. The beam starts at 3 s."""
     from imas.ids_defs import IDS_TIME_MODE_HOMOGENEOUS
     from imas.ids_identifiers import identifiers

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]  # license as an SPDX expression (PEP 639)
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "idscope"
 version = "0.1.0.dev0"
 description = "A lightweight jScope-like viewer for IMAS IDS data"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 dependencies = [
     "contourpy>=1.0",
